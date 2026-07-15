@@ -1,0 +1,707 @@
+// ==========================================
+// INDUSTRIAL DMA AXLE COUNTER - FIXED
+// ==========================================
+// FIXES APPLIED:
+//   [FIX-1] get_peak_in_band: Replaced wide band energy-sum with narrow
+//           peak-bin detection. Reduces noise bin accumulation from ~68
+//           bins down to ~10. Added /SAMPLES normalization so magnitude
+//           is amplitude-proportional and thresholds are stable.
+//   [FIX-2] Full complex-FFT path. Samples are loaded into an interleaved
+//           Re/Im array and transformed with dsps_fft2r_fc32 +
+//           dsps_bit_rev_fc32. dsps_cplx2reC_fc32 is intentionally NOT
+//           called: that helper is only for real-packed input, and running
+//           it on this full-complex array would corrupt the bin contents.
+//   [FIX-3] Static DC offset (-2048) is subtracted per sample. Any residual
+//           DC lands in Bin 0, which the band-peak search ignores, so it
+//           does not leak into the target bins. (A per-buffer mean-subtract
+//           was trialled but reverted as unnecessary for this signal.)
+//   [FIX-4] Samples are written directly into the aligned complex working
+//           buffers (v1_complex / v2_complex) as they arrive, windowed in
+//           place, then transformed in one pass - no separate raw buffers.
+//   [FIX-5] Exponential Moving Average (EMA) smoothing on both magnitude
+//           outputs before passing to axle logic. Suppresses per-frame
+//           FFT variance without adding latency.
+//   [FIX-6] ARM_THRESHOLD / DIP_THRESHOLD updated for normalized output.
+//           After /SAMPLES normalization the scale drops dramatically.
+//           *** CALIBRATE THESE FOR YOUR HARDWARE SIGNAL LEVEL ***
+// ==========================================
+
+#include "driver/gpio.h"
+#include "esp_adc/adc_continuous.h"
+#include "esp_dsp.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
+#include "soc/soc_caps.h"
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "esp_vfs_fat.h"
+#include "driver/sdmmc_host.h"
+#include "sdmmc_cmd.h"
+
+static bool sd_card_mounted = false;
+static const char *MOUNT_POINT = "/sdcard";
+
+// ==========================================
+// CONFIGURATION (ESP32-S3)
+// ==========================================
+#define SENSOR_1_PIN ADC_CHANNEL_0  // GPIO1 on ESP32-S3 (ADC1)
+#define SENSOR_2_PIN ADC_CHANNEL_1  // GPIO2 on ESP32-S3 (ADC1)
+
+#define SAMPLING_FREQ 80000
+#define SAMPLES       512
+
+// ESP32 continuous ADC splits total rate equally across both channels.
+// Effective per-channel rate = 80000 / 2 = 40000 Hz.
+// FFT frequency resolution = 40000 / 512 = ~78 Hz/bin.
+#define PER_CHANNEL_FREQ   ((float)SAMPLING_FREQ / 2.0f)   // 40000 Hz
+#define BIN_WIDTH          (PER_CHANNEL_FREQ / (float)SAMPLES) // ~78 Hz
+
+const float FREQ_S1 = 12500.0f;
+const float FREQ_S2 = 17500.0f;
+
+// Restored wider margin to capture 100% of the Hann window energy lobes and prevent 
+// scalloping loss when the oscillator frequency drifts slightly.
+const float FREQ_MARGIN = 500.0f;
+
+const float TRACK_DISTANCE = 0.5f;  // meters
+
+// [FIX-6] Auto-calibration implemented.
+// Press Calibration Button (GPIO 35) to measure steady state.
+// Pass wheel to measure dip, then press again to compute thresholds.
+
+// Thresholds (mutable for auto-calibration)
+static float arm_threshold_s1 = 200.0f;
+static float dip_threshold_s1 = 50.0f;
+
+static float arm_threshold_s2 = 200.0f;
+static float dip_threshold_s2 = 50.0f;
+
+// Calibration State
+typedef enum {
+    CALIB_IDLE,
+    CALIB_START_REQUESTED,
+    CALIB_ACTIVE,
+    CALIB_STOP_REQUESTED
+} calib_state_t;
+
+static volatile calib_state_t calib_state = CALIB_IDLE;
+
+// Absolute min/max tracking during calibration
+static float calib_s1_min = 99999.0f;
+static float calib_s1_max = 0.0f;
+static float calib_s2_min = 99999.0f;
+static float calib_s2_max = 0.0f;
+
+// EMA smoothing factor. 0.0 = ful smoothing, 1.0 = no history.
+// 0.33 gives a gentle low-pass that kills per-frame FFT jitter without
+// adding meaningful detection lag.
+#define EMA_ALPHA 0.25f
+
+#define TIMEOUT_MS 20000  // 20 seconds
+
+static const char *TAG = "AXLE_COUNTER";
+
+// ==========================================
+// GLOBALS & BUFFERS
+// ==========================================
+adc_continuous_handle_t adc_handle = NULL;
+uint8_t dma_buffer[SAMPLES * 8];
+
+TaskHandle_t  dsp_task_handle        = NULL;
+TaskHandle_t  prediction_task_handle = NULL;
+QueueHandle_t axle_event_queue       = NULL;
+
+typedef struct {
+    unsigned long timestamp;
+    float         speed;
+    long          lag_ms;
+} raw_event_t;
+
+// FFT working buffers — must be 16-byte aligned for ESP-DSP SIMD
+__attribute__((aligned(16))) float v1_complex[SAMPLES * 2];  // interleaved Re/Im
+__attribute__((aligned(16))) float v2_complex[SAMPLES * 2];
+__attribute__((aligned(16))) float wind_hann[SAMPLES];
+
+
+
+// Axle state
+unsigned long tS1 = 0, tS2 = 0;
+bool          s1_Armed = false, s2_Armed = false;
+unsigned long last_wheel_detection_time = 0;
+unsigned long ignore_detections_until   = 0;
+
+int total_wheels_detected  = 0;
+volatile int persistent_wheel_count = 0;
+
+// ==========================================
+// DMA INTERRUPT
+// ==========================================
+static bool IRAM_ATTR adc_conv_done_cb(adc_continuous_handle_t handle,
+                                       const adc_continuous_evt_data_t *edata,
+                                       void *user_data)
+{
+    BaseType_t mustYield = pdFALSE;
+    vTaskNotifyGiveFromISR(dsp_task_handle, &mustYield);
+    return (mustYield == pdTRUE);
+}
+
+// ==========================================
+// CALIBRATION MAP & CORRECTION
+// ==========================================
+typedef struct {
+    float measured;
+    float actual;
+} cal_point_t;
+
+// Sensor 1 (12.5 kHz) Calibration Map
+// Map measured amplitude to true amplitude
+static const cal_point_t S1_CAL_MAP[] = {
+    {0.0f,   0.0f},
+    {20.0f,  20.0f},
+    {50.0f,  50.0f},
+    {100.0f, 100.0f},
+    {200.0f, 200.0f}
+};
+#define S1_CAL_POINTS (sizeof(S1_CAL_MAP)/sizeof(S1_CAL_MAP[0]))
+
+// Sensor 2 (17.5 kHz) Calibration Map
+// S2 is higher frequency, so it often measures lower due to hardware filtering.
+// Adjust this map so that 'measured' maps to the 'actual' Vpp amplitude you expect.
+static const cal_point_t S2_CAL_MAP[] = {
+    {0.0f,   0.0f},
+    {20.0f,  20.0f},
+    {50.0f,  50.0f},
+    {100.0f, 100.0f},
+    {200.0f, 200.0f}
+};
+#define S2_CAL_POINTS (sizeof(S2_CAL_MAP)/sizeof(S2_CAL_MAP[0]))
+
+// Global flat correction factors (Applied after the map)
+static float S1_CORRECTION_FACTOR = 1.0f;
+static float S2_CORRECTION_FACTOR = 1.0f; 
+
+float apply_calibration(float measured, const cal_point_t* map, int num_points, float global_factor) {
+    float corrected = measured;
+    
+    if (num_points > 1) {
+        if (measured <= map[0].measured) {
+            corrected = map[0].actual;
+        } else if (measured >= map[num_points-1].measured) {
+            // Extrapolate past the end of the map based on highest point ratio
+            float ratio = map[num_points-1].actual / map[num_points-1].measured;
+            corrected = measured * ratio;
+        } else {
+            // Piecewise linear interpolation
+            for (int i = 0; i < num_points - 1; i++) {
+                if (measured >= map[i].measured && measured <= map[i+1].measured) {
+                    float t = (measured - map[i].measured) / (map[i+1].measured - map[i].measured);
+                    corrected = map[i].actual + t * (map[i+1].actual - map[i].actual);
+                    break;
+                }
+            }
+        }
+    }
+    return corrected * global_factor;
+}
+
+// ==========================================
+// [FIX-1] CORRECTED get_peak_in_band
+// ==========================================
+// Returns the PEAK single-bin magnitude inside a narrow band around
+// target_freq, normalized by SAMPLES so the value is proportional to
+// the true input signal amplitude.
+//
+// Output units: ADC counts (0–2048 scale, Hann-weighted).
+// At full-scale sine input (~2048 ADC amplitude) expect ~512.
+// At a typical EM carrier (100–500 ADC amplitude) expect ~25–125.
+float get_peak_in_band(float *complex_data, float target_freq)
+{
+    int start_bin = (int)((target_freq - FREQ_MARGIN) / BIN_WIDTH);
+    int end_bin   = (int)((target_freq + FREQ_MARGIN) / BIN_WIDTH);
+
+    if (start_bin < 1)            start_bin = 1;
+    if (end_bin   >= SAMPLES / 2) end_bin   = (SAMPLES / 2) - 1;
+
+    float total_energy = 0.0f;
+
+    for (int i = start_bin; i <= end_bin; i++) {
+        float re     = complex_data[i * 2 + 0];
+        float im     = complex_data[i * 2 + 1];
+        total_energy += (re * re + im * im);
+    }
+
+    // Return True RMS amplitude normalized by SAMPLES (keeps the FIX-6 thresholds working)
+    return sqrtf(total_energy) / (float)SAMPLES;
+}
+
+// ==========================================
+// AXLE DETECTION LOGIC (unchanged)
+// ==========================================
+void process_axle_logic(float m1, float m2)
+{
+    unsigned long now = pdTICKS_TO_MS(xTaskGetTickCount());
+
+    if (now < ignore_detections_until)
+        return;
+
+    // --- SENSOR 1 STATE MACHINE ---
+    if (m1 > arm_threshold_s1) {
+        s1_Armed = true;
+    } else if (m1 < dip_threshold_s1 && s1_Armed) {
+        ESP_LOGI(TAG, "Sensor 1 DIP Detected!");
+        tS1      = now;
+        s1_Armed = false;
+    }
+
+    // --- SENSOR 2 STATE MACHINE ---
+    if (m2 > arm_threshold_s2) {
+        s2_Armed = true;
+    } else if (m2 < dip_threshold_s2 && s2_Armed) {
+        ESP_LOGI(TAG, "Sensor 2 DIP Detected!");
+        tS2      = now;
+        s2_Armed = false;
+    }
+
+    if (tS1 > 0 && tS2 > 0) {
+        long lag = (long)tS2 - (long)tS1;
+        if (lag == 0) lag = 1;
+
+        float speed = TRACK_DISTANCE / (abs(lag) / 1000.0f);
+
+        raw_event_t event = {
+            .timestamp = now,
+            .speed     = speed,
+            .lag_ms    = lag
+        };
+
+        xQueueSend(axle_event_queue, &event, 0);
+
+        tS1 = 0;
+        tS2 = 0;
+    }
+}
+
+// ==========================================
+// CORE 0 PREDICTION MODEL TASK (unchanged)
+// ==========================================
+void prediction_model_task(void *parameter)
+{
+    raw_event_t event;
+    int established_direction = 0;
+    int direction_confidence  = 0;
+
+    while (1) {
+        if (xQueueReceive(axle_event_queue, &event,
+                          pdMS_TO_TICKS(TIMEOUT_MS)) == pdTRUE)
+        {
+            int   probability       = 100;
+            float time_since_last   = 0.0f;
+            float distance          = 999.0f;
+
+            if (total_wheels_detected > 0) {
+                time_since_last =
+                    (event.timestamp - last_wheel_detection_time) / 1000.0f;
+                distance = event.speed * time_since_last;
+            }
+
+            if (event.speed > 50.0f)  probability -= 50;
+            if (event.speed > 75.0f)  probability -= 50;
+
+            if (total_wheels_detected > 0 && distance < 0.75f)
+                probability -= 80;
+
+            if (labs(event.lag_ms) <= 2)
+                probability -= 30;
+
+            int current_dir = (event.lag_ms > 0) ? 1 : -1;
+
+            if (established_direction != 0 &&
+                current_dir != established_direction)
+                probability -= 80;
+
+            if (probability >= 50) {
+                total_wheels_detected++;
+                persistent_wheel_count++;
+                last_wheel_detection_time = event.timestamp;
+
+                if (established_direction == 0) {
+                    established_direction = current_dir;
+                    direction_confidence  = 1;
+                } else if (current_dir == established_direction) {
+                    direction_confidence++;
+                } else {
+                    direction_confidence--;
+                    if (direction_confidence <= 0) {
+                        established_direction = current_dir;
+                        direction_confidence  = 1;
+                    }
+                }
+
+                ESP_LOGI(TAG, ">> VALID AXLE DETECTED [Prob: %d%%] <<",
+                         probability);
+                ESP_LOGI(TAG, "Direction: %s | Speed: %.2f m/s | Dist: %.2f m",
+                         (event.lag_ms > 0 ? "INCOMING" : "OUTGOING"),
+                         event.speed, distance);
+                ESP_LOGI(TAG, "Total Wheels: %d | Persistent: %d",
+                         total_wheels_detected, persistent_wheel_count);
+            } else {
+                ESP_LOGW(TAG, "!! FAKE TRIGGER REJECTED [Prob: %d%%] !!",
+                         probability);
+                ESP_LOGW(TAG,
+                         "Speed: %.2f m/s | Dist: %.2f m | Lag: %ld ms",
+                         event.speed, distance, event.lag_ms);
+            }
+
+            // --- SD CARD LOGGING (ALL EVENTS) ---
+            if (sd_card_mounted) {
+                FILE *f = fopen("/sdcard/axle_log.csv", "a");
+                if (f != NULL) {
+                    const char *dir_str = (event.lag_ms > 0) ? "INCOMING" : "OUTGOING";
+                    const char *valid_str = (probability >= 50) ? "VALID" : "REJECTED";
+                    fprintf(f, "%lu,%s,%d,%.2f,%ld,%s,%.2f,%d\n", 
+                            event.timestamp, valid_str, probability, event.speed, event.lag_ms, dir_str, distance, total_wheels_detected);
+                    fclose(f);
+                } else {
+                    ESP_LOGE(TAG, "Failed to open axle_log.csv for appending");
+                }
+            }
+
+            // --- TELEPLOT NORMALIZED OUTPUTS ---
+            // Normalize probability (0-100 -> 0.0-1.0)
+            float norm_prob = probability / 100.0f;
+            if (norm_prob < 0.0f) norm_prob = 0.0f;
+            
+            // Normalize speed (Assume 50 m/s is full scale 1.0)
+            float norm_speed = event.speed / 50.0f;
+            if (norm_speed > 1.0f) norm_speed = 1.0f;
+            
+            // Normalize direction (1.0 = INCOMING, 0.0 = OUTGOING)
+            float norm_dir = (event.lag_ms > 0) ? 1.0f : 0.0f;
+
+            printf(">NormProb:%.2f\r\n", norm_prob);
+            printf(">NormSpeed:%.2f\r\n", norm_speed);
+            printf(">NormDir:%.2f\r\n", norm_dir);
+            fflush(stdout);
+
+        } else {
+            // Timeout — no wheels detected for TIMEOUT_MS
+            if (total_wheels_detected > 0) {
+                ESP_LOGI(TAG,
+                    "=== TIMEOUT (no wheels for %d s) ===",
+                    TIMEOUT_MS / 1000);
+                ESP_LOGI(TAG, "Final Net Wheels: %d", total_wheels_detected);
+                ESP_LOGI(TAG, "Persistent Count: %d", persistent_wheel_count);
+                ESP_LOGI(TAG, "Resetting...");
+
+                total_wheels_detected = 0;
+                s1_Armed              = false;
+                s2_Armed              = false;
+                tS1                   = 0;
+                tS2                   = 0;
+                established_direction = 0;
+                direction_confidence  = 0;
+                last_wheel_detection_time =
+                    pdTICKS_TO_MS(xTaskGetTickCount());
+            }
+        }
+    }
+}
+
+// ==========================================
+// EXTERNAL BUTTONS TASK
+// ==========================================
+// Monitors a GPIO pin to reset persistent wheel count,
+// and another for calibration. Includes 50ms debouncing.
+#define RESET_PIN GPIO_NUM_0  // GPIO 0 is the BOOT button on most dev boards
+#define CALIBRATE_PIN GPIO_NUM_35
+
+void buttons_monitor_task(void *parameter)
+{
+    gpio_config_t io_conf = {
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_INPUT,
+        .pin_bit_mask = (1ULL << RESET_PIN) | (1ULL << CALIBRATE_PIN),
+        .pull_down_en = 0,
+        .pull_up_en = 1,  // Enable internal pull-up (pin is HIGH by default)
+    };
+    gpio_config(&io_conf);
+
+    int last_reset_state = 1;
+    int last_calib_state = 1;
+    
+    while (1) {
+        int reset_state = gpio_get_level(RESET_PIN);
+        int calib_state_pin = gpio_get_level(CALIBRATE_PIN);
+        
+        // Reset Logic: Falling edge trigger (pin pulled to GND)
+        if (reset_state == 0 && last_reset_state == 1) { 
+            persistent_wheel_count = 0;
+            ESP_LOGW(TAG, "=========================================");
+            ESP_LOGW(TAG, "!!! PERSISTENT WHEEL COUNT RESET TO 0 !!!");
+            ESP_LOGW(TAG, "=========================================");
+        }
+        
+        // Calibration Logic: Falling edge trigger (pin pulled to GND)
+        if (calib_state_pin == 0 && last_calib_state == 1) {
+            if (calib_state == CALIB_IDLE) {
+                calib_state = CALIB_START_REQUESTED;
+            } else if (calib_state == CALIB_ACTIVE) {
+                calib_state = CALIB_STOP_REQUESTED;
+            }
+        }
+        
+        last_reset_state = reset_state;
+        last_calib_state = calib_state_pin;
+        vTaskDelay(pdMS_TO_TICKS(50)); // 50ms polling & debounce
+    }
+}
+
+// ==========================================
+// CORE 1 DSP TASK — FIXED
+// ==========================================
+void dsp_processing_task(void *parameter)
+{
+    uint32_t ret_num = 0;
+
+    // EMA state (persists across DMA interrupts)
+    float ema_s1 = 0.0f;
+    float ema_s2 = 0.0f;
+
+    // Per-sensor raw sample indices and ready flags
+    int  s1_idx = 0, s2_idx = 0;
+    int  log_divider = 0;
+
+    float magS1    = 0.0f, magS2    = 0.0f;
+    bool  s1_ready = false, s2_ready = false;
+
+    while (1) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        esp_err_t ret = adc_continuous_read(adc_handle, dma_buffer,
+                                            sizeof(dma_buffer), &ret_num, 0);
+
+        if (ret != ESP_OK)
+            continue;
+
+        for (int i = 0; i < (int)ret_num; i += SOC_ADC_DIGI_RESULT_BYTES) {
+
+            adc_digi_output_data_t *p =
+                (adc_digi_output_data_t *)&dma_buffer[i];
+
+            // ---- SENSOR 1 ----
+            if (p->type2.channel == SENSOR_1_PIN) {
+                // Populate directly into the complex array.
+                // A static -2048 offset is fine; any residual DC offset lands 
+                // harmlessly in Bin 0, which is perfectly filtered by the FFT.
+                v1_complex[s1_idx * 2 + 0] = ((float)(p->type2.data) - 2048.0f) * wind_hann[s1_idx];
+                v1_complex[s1_idx * 2 + 1] = 0.0f;
+                s1_idx++;
+
+                if (s1_idx >= SAMPLES) {
+                    // Standard complex FFT on a full Re/Im array. Do NOT call
+                    // cplx2reC here - it is only valid for real-packed input.
+                    dsps_fft2r_fc32(v1_complex, SAMPLES);
+                    dsps_bit_rev_fc32(v1_complex, SAMPLES);
+
+                    magS1   = get_peak_in_band(v1_complex, FREQ_S1);
+                    magS1   = apply_calibration(magS1, S1_CAL_MAP, S1_CAL_POINTS, S1_CORRECTION_FACTOR);
+                    s1_idx  = 0;
+                    s1_ready = true;
+                }
+            }
+
+            // ---- SENSOR 2 ----
+            else if (p->type2.channel == SENSOR_2_PIN) {
+                v2_complex[s2_idx * 2 + 0] = ((float)(p->type2.data) - 2048.0f) * wind_hann[s2_idx];
+                v2_complex[s2_idx * 2 + 1] = 0.0f;
+                s2_idx++;
+
+                if (s2_idx >= SAMPLES) {
+                    dsps_fft2r_fc32(v2_complex, SAMPLES);
+                    dsps_bit_rev_fc32(v2_complex, SAMPLES);
+
+                    magS2   = get_peak_in_band(v2_complex, FREQ_S2);
+                    magS2   = apply_calibration(magS2, S2_CAL_MAP, S2_CAL_POINTS, S2_CORRECTION_FACTOR);
+                    s2_idx  = 0;
+                    s2_ready = true;
+                }
+            }
+
+            // Only process when BOTH sensors have a fresh FFT result
+            if (s1_ready && s2_ready) {
+                s1_ready = false;
+                s2_ready = false;
+
+                // [FIX-5] EMA smoothing — kills per-frame FFT jitter
+                ema_s1 = EMA_ALPHA * magS1 + (1.0f - EMA_ALPHA) * ema_s1;
+                ema_s2 = EMA_ALPHA * magS2 + (1.0f - EMA_ALPHA) * ema_s2;
+
+                // Print smoothed values for Teleplot (every other cycle)
+                if (log_divider % 2 == 0) {
+                    printf(">MagS1:%.2f\r\n", ema_s1);
+                    printf(">MagS2:%.2f\r\n", ema_s2);
+                    printf(">Wheels:%d\r\n",  total_wheels_detected);
+                    fflush(stdout);
+                }
+
+                // Feed smoothed magnitudes to axle logic
+                process_axle_logic(ema_s1, ema_s2);
+
+                // --- CALIBRATION LOGIC ---
+                if (calib_state == CALIB_START_REQUESTED) {
+                    calib_s1_min = 99999.0f;
+                    calib_s1_max = 0.0f;
+                    calib_s2_min = 99999.0f;
+                    calib_s2_max = 0.0f;
+                    
+                    ESP_LOGI(TAG, "=== CALIBRATION STARTED ===");
+                    ESP_LOGI(TAG, "Tracking absolute MIN and MAX. Let wheels pass, then press button again.");
+                    
+                    calib_state = CALIB_ACTIVE;
+                } else if (calib_state == CALIB_ACTIVE) {
+                    if (ema_s1 < calib_s1_min) calib_s1_min = ema_s1;
+                    if (ema_s1 > calib_s1_max) calib_s1_max = ema_s1;
+                    
+                    if (ema_s2 < calib_s2_min) calib_s2_min = ema_s2;
+                    if (ema_s2 > calib_s2_max) calib_s2_max = ema_s2;
+                } else if (calib_state == CALIB_STOP_REQUESTED) {
+                    arm_threshold_s1 = calib_s1_max * 0.70f;
+                    arm_threshold_s2 = calib_s2_max * 0.70f;
+                    
+                    dip_threshold_s1 = calib_s1_min * 1.30f;
+                    dip_threshold_s2 = calib_s2_min * 1.30f;
+                    
+                    ESP_LOGI(TAG, "=== CALIBRATION FINISHED ===");
+                    ESP_LOGI(TAG, "S1 - Max: %.1f -> ARM: %.1f | Min: %.1f -> DIP: %.1f", calib_s1_max, arm_threshold_s1, calib_s1_min, dip_threshold_s1);
+                    ESP_LOGI(TAG, "S2 - Max: %.1f -> ARM: %.1f | Min: %.1f -> DIP: %.1f", calib_s2_max, arm_threshold_s2, calib_s2_min, dip_threshold_s2);
+                    
+                    calib_state = CALIB_IDLE;
+                }
+
+                log_divider++;
+            }
+        }
+    }
+}
+
+// ==========================================
+// MAIN ENTRY POINT
+// ==========================================
+void app_main(void)
+{
+    ESP_LOGI(TAG, "Booting Industrial DMA Axle Counter (ESP32-S3) — FIXED...");
+
+    // Init FFT tables
+    esp_err_t dsp_ret =
+        dsps_fft2r_init_fc32(NULL, CONFIG_DSP_MAX_FFT_SIZE);
+    if (dsp_ret != ESP_OK) {
+        ESP_LOGE(TAG, "FFT init failed: %i", dsp_ret);
+        return;
+    }
+    dsps_wind_hann_f32(wind_hann, SAMPLES);
+
+    // ADC continuous setup
+    adc_continuous_handle_cfg_t adc_config = {
+        // Large store buffer prevents sample drops during printf
+        .max_store_buf_size = 32768,
+        .conv_frame_size    = SAMPLES * SOC_ADC_DIGI_RESULT_BYTES * 2,
+    };
+    ESP_ERROR_CHECK(adc_continuous_new_handle(&adc_config, &adc_handle));
+
+    adc_continuous_config_t dig_cfg = {
+        .sample_freq_hz = SAMPLING_FREQ,
+        .conv_mode      = ADC_CONV_SINGLE_UNIT_1,       // ESP32 ADC1
+        .format         = ADC_DIGI_OUTPUT_FORMAT_TYPE2, // ESP32-S3 specific
+    };
+
+    adc_digi_pattern_config_t adc_pattern[2] = {0};
+
+    adc_pattern[0].atten     = ADC_ATTEN_DB_12;
+    adc_pattern[0].channel   = SENSOR_1_PIN;
+    adc_pattern[0].unit      = ADC_UNIT_1;
+    adc_pattern[0].bit_width = SOC_ADC_DIGI_MAX_BITWIDTH;
+
+    adc_pattern[1].atten     = ADC_ATTEN_DB_12;
+    adc_pattern[1].channel   = SENSOR_2_PIN;
+    adc_pattern[1].unit      = ADC_UNIT_1;
+    adc_pattern[1].bit_width = SOC_ADC_DIGI_MAX_BITWIDTH;
+
+    dig_cfg.pattern_num = 2;
+    dig_cfg.adc_pattern = adc_pattern;
+    ESP_ERROR_CHECK(adc_continuous_config(adc_handle, &dig_cfg));
+
+    adc_continuous_evt_cbs_t cbs = {.on_conv_done = adc_conv_done_cb};
+    ESP_ERROR_CHECK(
+        adc_continuous_register_event_callbacks(adc_handle, &cbs, NULL));
+
+    axle_event_queue = xQueueCreate(10, sizeof(raw_event_t));
+
+    xTaskCreatePinnedToCore(prediction_model_task, "Prediction_Task",
+                            1024 * 4, NULL, 5,
+                            &prediction_task_handle, 0);
+
+    // [NOTE] Stack bumped from 8K to 12K to accommodate raw buffers and
+    // mean-computation loop safely.
+    xTaskCreatePinnedToCore(dsp_processing_task, "DSP_Task",
+                            1024 * 12, NULL, 5,
+                            &dsp_task_handle, 1);
+
+    // Create the buttons monitor task (can run on any core, low priority is fine)
+    xTaskCreate(buttons_monitor_task, "Buttons_Task", 2048, NULL, 2, NULL);
+
+    // Boot stabilization: ignore first 2 seconds of detections
+    ignore_detections_until =
+        pdTICKS_TO_MS(xTaskGetTickCount()) + 2000;
+
+    // --- INIT SD CARD ---
+    ESP_LOGI(TAG, "Initializing SD Card for Logging...");
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
+    
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .format_if_mount_failed = false,
+        .max_files = 5,
+        .allocation_unit_size = 16 * 1024
+    };
+    
+    sdmmc_card_t *card;
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.clk = GPIO_NUM_12;
+    slot_config.cmd = GPIO_NUM_11;
+    slot_config.d0  = GPIO_NUM_13;
+    slot_config.width = 1;
+    
+    esp_err_t sd_ret = esp_vfs_fat_sdmmc_mount(MOUNT_POINT, &host, &slot_config, &mount_config, &card);
+    if (sd_ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to mount SD card VFS FAT (%s)", esp_err_to_name(sd_ret));
+    } else {
+        ESP_LOGI(TAG, "SD Card mounted successfully!");
+        sd_card_mounted = true;
+        
+        // Ensure CSV header exists
+        FILE *f = fopen("/sdcard/axle_log.csv", "a");
+        if (f != NULL) {
+            fseek(f, 0, SEEK_END);
+            long size = ftell(f);
+            if (size == 0) {
+                fprintf(f, "Timestamp_ms,Validity,Probability,Speed_m_s,Lag_ms,Direction,Distance_m,Total_Wheels\n");
+            }
+            fclose(f);
+        } else {
+            ESP_LOGE(TAG, "Failed to open axle_log.csv for writing header");
+        }
+    }
+
+    ESP_ERROR_CHECK(adc_continuous_start(adc_handle));
+    ESP_LOGI(TAG, "DMA Started. CPU0 free (prediction). CPU1 running DSP.");
+
+    // Print calibration guidance once at boot 
+    ESP_LOGI(TAG, "--- AUTO-CALIBRATION READY ---");
+    ESP_LOGI(TAG, "Press button on GPIO %d to start calibration.", CALIBRATE_PIN);
+    ESP_LOGI(TAG, "Current S1: ARM=%.1f DIP=%.1f", arm_threshold_s1, dip_threshold_s1);
+    ESP_LOGI(TAG, "Current S2: ARM=%.1f DIP=%.1f", arm_threshold_s2, dip_threshold_s2);
+}

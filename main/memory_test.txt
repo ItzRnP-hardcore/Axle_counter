@@ -1,0 +1,84 @@
+#include <stdio.h>
+#include "esp_log.h"
+#include "driver/sdmmc_host.h"
+#include "sdmmc_cmd.h"
+#include "sd_protocol_defs.h"
+
+static const char *TAG = "SD_CARD_PROPERTIES";
+
+void app_main(void)
+{
+    ESP_LOGI(TAG, "===============================================");
+    ESP_LOGI(TAG, "Initializing Hardware Bus Diagnostic Scan...");
+    ESP_LOGI(TAG, "===============================================");
+
+    // 1. Initialize the native hardware SDMMC Host controller configuration
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.max_freq_khz = SDMMC_FREQ_HIGHSPEED; // Push to 40 MHz High-Speed mode
+    ESP_ERROR_CHECK((*host.init)());
+    
+    // 2. Set up slot configurations 
+    // (Uses the default pre-mapped hardware pins for the board's slot)
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    
+    // Override with the N16R8 devkit's typical SD card pins:
+    slot_config.clk = GPIO_NUM_12;
+    slot_config.cmd = GPIO_NUM_11;
+    slot_config.d0  = GPIO_NUM_13;
+    
+    // This board usually only has D0 wired, so we MUST use 1-bit mode!
+    slot_config.width = 1;
+
+    // Initialize the SDMMC slot peripheral
+    esp_err_t ret = sdmmc_host_init_slot(host.slot, &slot_config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize host slot system (%s)", esp_err_to_name(ret));
+        return;
+    }
+
+    // 3. Allocate structure memory to hold raw hardware properties
+    sdmmc_card_t* card = (sdmmc_card_t*) malloc(sizeof(sdmmc_card_t));
+    if (card == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory buffer for card attributes.");
+        return;
+    }
+
+    // 4. Probe the slot to see if a physical card responds to the inquiry command
+    ESP_LOGI(TAG, "Probing slot pins for a responsive SD card...");
+    ret = sdmmc_card_init(&host, card);
+
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "🔴 NO CARD DETECTED OR INITIALIZATION FAILED!");
+        ESP_LOGE(TAG, "Reason: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "Check: Is the card fully inserted? Do the pins have pull-up resistors?");
+        free(card);
+        return;
+    }
+
+    // 5. Success! Card is alive. Read out properties directly from internal registers
+    ESP_LOGI(TAG, "🟢 SUCCESS! SD Card detected and active.");
+    printf("\n--- HARDWARE PROPERTIES ---\n");
+
+    // Print standard manufactured information (Name and Revision)
+    printf("Card Name        : %s\n", card->cid.name);
+    printf("Card Type        : %s\n", (card->ocr & SD_OCR_SDHC_CAP) ? "SDHC/SDXC (High Capacity)" : "SDSC (Standard Capacity)");
+    
+    // Fetch and calculate raw capacity sizes from sector data
+    uint64_t total_sectors = card->csd.capacity;
+    uint32_t sector_size  = card->csd.sector_size;
+    uint64_t total_bytes   = total_sectors * sector_size;
+    float total_gigabytes  = (float)total_bytes / (1024.0 * 1024.0 * 1024.0);
+
+    printf("Total Sectors    : %llu\n", total_sectors);
+    printf("Sector Size      : %lu Bytes\n", sector_size);
+    printf("Raw Storage Size : %llu Bytes (~%.2f GB)\n", total_bytes, total_gigabytes);
+    
+    // Print bus attributes
+    printf("Max Bus Speed    : %lu MHz\n", card->max_freq_khz / 1000);
+    printf("Current Bus Width: %s\n", (card->log_bus_width == 2) ? "4-bit parallel" : "1-bit serial");
+    printf("---------------------------\n\n");
+
+    // Clean up memory
+    free(card);
+    ESP_LOGI(TAG, "Diagnostic scan finished successfully.");
+}

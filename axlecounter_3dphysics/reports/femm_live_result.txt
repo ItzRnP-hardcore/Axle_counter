@@ -1,0 +1,16 @@
+=== FEMM LIVE RUN ===
+FEM file: C:\Users\rudra\Axle_counter\axlecounter_3dphysics\femm\InternMadebyPratham.FEM
+
+[MAGNETOSTATIC (f=0)]
+  TX current        : 2.5000 A
+  RX flux linkage   : 1.9280e-08 Wb
+  RX induced voltage: 0.000000 V
+  Mutual inductance : 0.007712 uH
+
+[TIME-HARMONIC (f=20kHz)]
+  TX current        : 2.5000 A
+  RX flux linkage   : 1.1910e-07 Wb
+  RX induced voltage: 0.014966 V
+  Mutual inductance : 0.047639 uH
+
+DONE OK
