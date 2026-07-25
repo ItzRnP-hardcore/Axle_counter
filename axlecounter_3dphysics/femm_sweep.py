@@ -33,10 +33,10 @@ current_sweep = [2.5, 5.0]      # Amperes in the energised ("New Circuit") coil
 # Coil half-labels for the CURRENT base geometry: (x, y, circuit, group, sign)
 # Two halves per coil get +turns / -turns so each coil stays balanced.
 COIL_HALVES = [
-    (48.09, 110.3,   "New Circuit", 2, +1),   # energised coil, half A
-    (70.29, 107.29,  "New Circuit", 2, -1),   # energised coil, half B
-    (-72.71, 121.26, "Receiver",    1, +1),   # sense coil, half A
-    (-50.59, 124.0,  "Receiver",    1, -1),   # sense coil, half B
+    (-72.71, 121.26, "New Circuit", 1, +1),   # energised coil, half A (left)
+    (-50.59, 124.0,  "New Circuit", 1, -1),   # energised coil, half B (left)
+    (48.09, 110.3,   "Receiver",    2, +1),   # sense coil, half A (right)
+    (70.29, 107.29,  "Receiver",    2, -1),   # sense coil, half B (right)
 ]
 COIL_MATERIAL = "18 AWG"
 

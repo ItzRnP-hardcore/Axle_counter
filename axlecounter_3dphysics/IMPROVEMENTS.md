@@ -52,12 +52,8 @@ note below.
 geometry is exactly as you had it. Run it yourself when you're ready to bake in
 the optimised geometry.
 
-## Bug worth a look (not silently "fixed")
-In `femm_sweep.py` the turns are assigned with the TX labels pointing at the
-`"Receiver"` circuit and the RX labels at `"New Circuit"`. Given the unusual
-circuit naming in the file this may be deliberate, but it reads as swapped.
-The coordinates/circuit names are now centralised in `config.py` so you can
-correct it in one place if it is indeed a mix-up.
+## Bug worth a look — FIXED (2026-07-25)
+In `femm_sweep.py`, the coil labels were previously swapped (TX labels pointing to the `"Receiver"` circuit, and RX labels pointing to `"New Circuit"`). This has now been corrected so that the left coil (-x) correctly uses the `"New Circuit"` (TX) and the right coil (+x) uses the `"Receiver"` (RX) matching `config.py`.
 
 ## Live FEMM run — confirmation (2026-07-15)
 `femm_run_once.py` was executed against your FEMM 4.2 install and solved the base

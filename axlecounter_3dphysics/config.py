@@ -45,6 +45,8 @@ height_shifts = [0]                        # height fixed per constraint
 tilt_angles = [-15, -10, -5, 0, 5, 10, 15] # inward (-) / outward (+)
 
 # --- Results appended automatically by the optimisation scripts -------------
+# The baseline mutual inductance is calculated for 100 turns per coil.
+BASELINE_TURNS = 100
 OPTIMAL_M_uH = 0.00771182593163102
 OPTIMAL_X = -15.273096737661167
 OPTIMAL_Y = 0
