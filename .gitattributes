@@ -1,0 +1,7 @@
+# Protect binaries from line-ending conversion
+*.pdf binary
+*.png binary
+*.FEM -text
+*.fem -text
+*.ans -text
+*.ipynb -text
