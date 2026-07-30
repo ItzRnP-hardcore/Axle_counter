@@ -30,15 +30,18 @@ WORK_FEM = os.path.join(config.BASE_DIR, "_sweep_work.fem")
 turns_sweep   = [50, 100, 150, 200]
 current_sweep = [2.5, 5.0]      # Amperes in the energised ("New Circuit") coil
 
-# Coil half-labels for the CURRENT base geometry: (x, y, circuit, group, sign)
-# Two halves per coil get +turns / -turns so each coil stays balanced.
-COIL_HALVES = [
-    (-72.71, 121.26, "New Circuit", 1, +1),   # energised coil, half A (left)
-    (-50.59, 124.0,  "New Circuit", 1, -1),   # energised coil, half B (left)
-    (48.09, 110.3,   "Receiver",    2, +1),   # sense coil, half A (right)
-    (70.29, 107.29,  "Receiver",    2, -1),   # sense coil, half B (right)
-]
-COIL_MATERIAL = "18 AWG"
+# Coil half-labels from config (verified against the base file): each half
+# gets +turns / -turns so the coil stays balanced. NOTE: in the saved file the
+# energised "New Circuit" is the RIGHT coil (group 2) and "Receiver" is the
+# LEFT coil (group 1) -- the mapping below preserves that instead of silently
+# flipping it like the old hard-coded table did.
+COIL_HALVES = (
+    [(x, y, config.TX_CIRCUIT, config.TX_GROUP, 1 if t > 0 else -1)
+     for (x, y, t) in config.TX_LABELS]
+    + [(x, y, config.RX_CIRCUIT, config.RX_GROUP, 1 if t > 0 else -1)
+       for (x, y, t) in config.RX_LABELS]
+)
+COIL_MATERIAL = config.COIL_WIRE_BLOCK
 
 def run_sweep():
     print("Starting property-based FEMM sweep (no geometry scaling)...")
@@ -51,20 +54,21 @@ def run_sweep():
                 femm.opendocument(config.FEM_FILE)
                 # Work on a scratch copy so the base model is NEVER overwritten
                 femm.mi_saveas(WORK_FEM)
-                # AC operating point
-                femm.mi_probdef(config.FREQUENCY_HZ, "millimeters", "planar", 1e-8, 1, 30, 0)
+                # AC operating point at the real coil depth
+                femm.mi_probdef(config.FREQUENCY_HZ, "millimeters", "planar",
+                                1e-8, config.COIL_DEPTH_MM, 30, 0)
                 # Set turns on each coil half (block property) -- balanced +/- per coil
                 for (x, y, circuit, group, sign) in COIL_HALVES:
                     femm.mi_selectlabel(x, y)
                     femm.mi_setblockprop(COIL_MATERIAL, 1, 0, circuit, 0, group, sign * turns)
                     femm.mi_clearselected()
                 # Set drive current on the energised circuit (circuit property)
-                femm.mi_modifycircprop("New Circuit", 1, cur)
+                femm.mi_modifycircprop(config.TX_CIRCUIT, 1, cur)
                 # Solve
                 femm.mi_analyze(1)
                 femm.mi_loadsolution()
-                rx = femm.mo_getcircuitproperties("Receiver")
-                tx = femm.mo_getcircuitproperties("New Circuit")
+                rx = femm.mo_getcircuitproperties(config.RX_CIRCUIT)
+                tx = femm.mo_getcircuitproperties(config.TX_CIRCUIT)
                 rx_v = abs(rx[1]); rx_flux = abs(rx[2]); tx_i = abs(tx[0])
                 M_uH = (rx_flux / tx_i) * 1e6 if tx_i > 0 else 0.0
                 results.append([turns, cur, tx_i, rx_flux, M_uH, rx_v])
@@ -75,6 +79,9 @@ def run_sweep():
     finally:
         femm.closefemm()
 
+    if not results:
+        print("No results collected -- keeping the previous CSV untouched.")
+        return
     with open(CSV_OUT, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["Turns", "Drive_Current_A", "TX_Current_A", "RX_Flux_Wb",

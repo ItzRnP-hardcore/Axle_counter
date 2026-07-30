@@ -13,11 +13,13 @@ Key coupling identity (both coils identical, series/parallel resonant):
 So the measured signal is LIMITED BY THE CAPACITOR VOLTAGE RATING. Higher signal
 => higher cap voltage. This drives the design table below.
 """
+import os
 import numpy as np, json
+import config
 
 mu0 = 4e-7*np.pi
 rho = 1.68e-8
-r_eff   = 0.035          # effective coil radius (m)  ~ FEM model coil size
+r_eff   = config.COIL_RADIUS_M   # effective coil radius (m) ~ FEM model coil size
 Ip_peak = 5.0            # max primary drive current (A peak)
 Lwire_max = 500.0        # max wire length per coil (m)
 f_op    = 25e3           # operating frequency (Hz)
@@ -27,7 +29,8 @@ GAUGE   = ("AWG16", 0.646e-3)   # thick wire for 5 A + low resistance
 
 w = 2*np.pi*f_op
 a = GAUGE[1]
-M_ref = 0.03708e-6       # H, FEM DOE anchor at Np=Ns=100 (20 kHz, scales ~N^2)
+M_ref = config.M0_H      # H, verified FEMM anchor at Np=Ns=100 (measured at
+                         # 20 kHz; M is treated as geometry-dominated here)
 
 def mutual_H(N):  return M_ref*(N/100.0)**2
 def self_L(N):    return mu0*N**2*r_eff*(np.log(8*r_eff/a)-2.0)
@@ -49,6 +52,10 @@ for Vcap_max in cap_ratings:
         if Vcap<=Vcap_max: bestN=N
         else: break
         N+=1
+    if bestN is None:
+        print(f"  (skipping {Vcap_max} V class: cap voltage exceeds rating "
+              f"even at N=20)")
+        continue
     N=bestN
     L=self_L(N); R,lwire,delta=ac_R(N,f_op)
     M=mutual_H(N)
@@ -70,11 +77,18 @@ for r in rows:
 print("="*96)
 
 # ---- Recommended design: the 1000 V class (good signal, standard cap) -------
-rec=[r for r in rows if r["Vcap"]==1000][0]
+rec_list=[r for r in rows if r["Vcap"]==1000]
+if not rec_list:
+    raise SystemExit("No feasible 1000 V design row -- inspect the table above.")
+rec=rec_list[0]
+# skin depth depends only on f_op -- compute it directly rather than relying
+# on the loop variable leaking out of the last iteration
+delta=np.sqrt(rho/(np.pi*f_op*mu0))
 rec.update(dict(f_kHz=f_op/1e3, gauge=GAUGE[0], wire_radius_mm=a*1e3,
     coil_dia_mm=2*r_eff*1e3, Ip_A=Ip_peak, Q=Q_REAL, skin_mm=delta*1e3,
     Cs_nF=rec["Cp_nF"]))
-json.dump({"table":rows,"recommended":rec}, open("reports/optimal_design.json","w"), indent=2)
+with open(os.path.join(config.OUTPUT_DIR, "optimal_design.json"), "w") as f:
+    json.dump({"table":rows,"recommended":rec}, f, indent=2)
 print("\nRECOMMENDED (1000 V cap class):")
 for k in ["N","L_mH","M_uH","R","lwire","Vrx_oc_mV","Vrx_tuned_V","Cp_nF","Vdrive","Ploss"]:
     print(f"  {k:12}: {rec[k]:.4f}" if isinstance(rec[k],float) else f"  {k:12}: {rec[k]}")

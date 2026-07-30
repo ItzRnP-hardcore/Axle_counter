@@ -35,11 +35,17 @@ def parse_geom(path):
     labels=[(float(r[0]),float(r[1]),int(r[2]),int(r[7])) for r in sec("[NumBlockLabels]")]
     return pts,segs,labels
 
-nx,ny,na,tris=parse_ans(os.path.join(PROJ,"_wheel_work.ans"))
-pts,segs,labels=parse_geom(os.path.join(PROJ,"_wheel_work.fem"))
+_fem=os.path.join(PROJ,"_wheel_work.fem"); _ans=os.path.join(PROJ,"_wheel_work.ans")
+if not (os.path.exists(_fem) and os.path.exists(_ans)):
+    raise SystemExit("_wheel_work.fem/.ans not found -- run femm_wheel_dip.py "
+                     "(run_wheel.bat) first.")
+nx,ny,na,tris=parse_ans(_ans)
+pts,segs,labels=parse_geom(_fem)
 print(f"Parsed FEM: {len(nx)} nodes, {len(tris)} tris, {len(pts)} pts, {len(segs)} segs")
 triang=mtri.Triangulation(nx,ny,tris)
-gcol={0:"#555555",1:ACCENT2,2:ACCENT3,3:"#7f8c8d"}
+# group 1 = LEFT coil = RX ("Receiver"), group 2 = RIGHT coil = TX
+# ("New Circuit") -- the old legend had this backwards.
+gcol={0:"#555555",1:ACCENT3,2:ACCENT2,3:"#7f8c8d"}
 
 fig,ax=plt.subplots(figsize=(8.2,7.4))
 tcf=ax.tricontourf(triang,na*1e6,levels=40,cmap="RdBu_r")
@@ -47,8 +53,8 @@ ax.tricontour(triang,na*1e6,levels=26,colors="k",linewidths=0.45,alpha=0.55)
 cb=fig.colorbar(tcf,ax=ax,shrink=0.85); cb.set_label(r"Vector potential $A_z$ ($\mu$Wb/m)")
 for n0,n1,g in segs:
     x0,y0=pts[n0];x1,y1=pts[n1]; ax.plot([x0,x1],[y0,y1],color=gcol.get(g,"k"),lw=2.0)
-ax.plot([],[],color=ACCENT2,lw=2,label="TX coil (grp 1)")
-ax.plot([],[],color=ACCENT3,lw=2,label="RX coil (grp 2)")
+ax.plot([],[],color=ACCENT2,lw=2,label="TX coil (grp 2, right)")
+ax.plot([],[],color=ACCENT3,lw=2,label="RX coil (grp 1, left)")
 ax.plot([],[],color="#555555",lw=2,label="Steel rail / boundary")
 
 # Add the wheel rectangle overlay

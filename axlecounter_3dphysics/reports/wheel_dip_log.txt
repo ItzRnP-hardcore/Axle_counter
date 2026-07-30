@@ -1,6 +1,0 @@
-=== AXLE COUNTER DETECTION DIP (FEMM) ===
-[No wheel]   M=0.03708 uH  RXflux=9.2695e-08 Wb  RXvolt=0.01165 V
-[Wheel in]   M=0.00307 uH  RXflux=7.6664e-09 Wb  RXvolt=0.00096 V
---> Detection dip: 91.7%  (M 0.03708 -> 0.00307 uH)
-DONE OK
-BATCH_FINISHED 

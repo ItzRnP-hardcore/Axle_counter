@@ -11,6 +11,8 @@ Run by double-clicking run_femm.bat (which handles pyfemm install + logging).
 import os, sys, traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import config
 OUT  = os.path.join(HERE, "reports", "femm_live_result.txt")
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 
@@ -19,8 +21,10 @@ def log(msg, f):
 
 def solve_at(femm, freq, fem_file):
     femm.opendocument(fem_file)
-    # first arg of mi_probdef is the frequency -> switches solver mode
-    femm.mi_probdef(freq, "millimeters", "planar", 1e-8, 1, 30, 0)
+    # first arg of mi_probdef is the frequency -> switches solver mode;
+    # depth = real coil axial length so absolute values are physical
+    femm.mi_probdef(freq, "millimeters", "planar", 1e-8,
+                    config.COIL_DEPTH_MM, 30, 0)
     femm.mi_saveas(os.path.join(HERE, "_live_tmp.fem"))
     femm.mi_analyze(1)
     femm.mi_loadsolution()

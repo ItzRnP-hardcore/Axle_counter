@@ -28,7 +28,10 @@ def set_frequency(freq_hz=None):
     if freq_hz is None:
         freq_hz = config.FREQUENCY_HZ
     # mi_probdef(frequency, units, type, precision, depth, minangle, acsolver)
-    femm.mi_probdef(freq_hz, "millimeters", "planar", 1e-8, 1, 30, 0)
+    # Depth = the real coil's axial length so absolute flux/M/V come out in
+    # physical units instead of per-mm (see config.COIL_DEPTH_MM).
+    femm.mi_probdef(freq_hz, "millimeters", "planar", 1e-8,
+                    config.COIL_DEPTH_MM, 30, 0)
     return freq_hz
 
 
@@ -50,3 +53,21 @@ def open_base(set_ac=True):
     femm.opendocument(config.FEM_FILE)
     if set_ac:
         set_frequency(config.FREQUENCY_HZ)
+
+
+def open_scratch(work_name, set_ac=True):
+    """Open the base FEM file and immediately save-as a scratch copy.
+
+    FEMM auto-saves the open document when it analyzes, so any script that
+    calls mi_analyze() on the base file silently mutates it. Always work on a
+    scratch copy. `work_name` is a filename (saved into config.BASE_DIR) or an
+    absolute path. Returns the scratch path.
+    """
+    import os
+    femm = _femm()
+    path = work_name if os.path.isabs(work_name) else os.path.join(config.BASE_DIR, work_name)
+    femm.opendocument(config.FEM_FILE)
+    femm.mi_saveas(path)
+    if set_ac:
+        set_frequency(config.FREQUENCY_HZ)
+    return path

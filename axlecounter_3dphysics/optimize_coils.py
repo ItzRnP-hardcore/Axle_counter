@@ -1,5 +1,6 @@
 import numpy as np
 import time
+import config
 
 print("Starting optimizer...")
 start_time = time.time()
@@ -14,12 +15,14 @@ MAX_WIRE_LEN = 500.0 # meters per coil
 mu0 = 4 * np.pi * 1e-7
 rho_copper = 1.68e-8
 
-# Baseline from FEMM optimization
-M0 = 0.00771e-6 # H
-Np0 = 100
-Ns0 = 60
-Ap0 = 0.01 # m^2
-As0 = 0.06 # m^2
+# Verified FEMM baseline (see config.py). The old version used a stale DC
+# value of 0.00771e-6 and Ns0=60 despite the model having 100 turns on both
+# coils. M ~ N^2 is FEMM-verified; the linear-in-area term is extrapolated.
+M0 = config.M0_H     # H
+Np0 = config.BASELINE_TURNS
+Ns0 = config.BASELINE_TURNS
+Ap0 = config.A_REF_M2 # m^2, nominal baseline coil area
+As0 = config.A_REF_M2 # m^2
 
 # Function for AC resistance
 def get_ac_resistance(r_dc, a, freq):

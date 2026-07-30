@@ -18,15 +18,16 @@ def run_freq_sweep():
             femm.opendocument(config.FEM_FILE)
             femm.mi_saveas(WORK_FEM)
             
-            # Set the new frequency
-            femm.mi_probdef(freq, "millimeters", "planar", 1e-8, 1, 30, 0)
+            # Set the new frequency (at the real coil depth)
+            femm.mi_probdef(freq, "millimeters", "planar", 1e-8,
+                            config.COIL_DEPTH_MM, 30, 0)
             
             # Solve
             femm.mi_analyze(1)
             femm.mi_loadsolution()
             
-            rx = femm.mo_getcircuitproperties("Receiver")
-            tx = femm.mo_getcircuitproperties("New Circuit")
+            rx = femm.mo_getcircuitproperties(config.RX_CIRCUIT)
+            tx = femm.mo_getcircuitproperties(config.TX_CIRCUIT)
             
             rx_v = abs(rx[1])
             rx_flux = abs(rx[2])
@@ -48,6 +49,9 @@ def run_freq_sweep():
     finally:
         femm.closefemm()
 
+    if not results:
+        print("No results collected -- keeping the previous CSV untouched.")
+        return
     with open(CSV_OUT, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["Frequency_Hz", "TX_Current_A", "RX_Flux_Wb", "Mutual_Inductance_uH", "RX_Voltage_V", "L_TX_uH"])

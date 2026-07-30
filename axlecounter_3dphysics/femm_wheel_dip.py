@@ -21,8 +21,8 @@ WX0,WX1,WY0,WY1 = -32, 32, 150, 250
 
 def coil_flux(femm):
     femm.mi_analyze(1); femm.mi_loadsolution()
-    rx=femm.mo_getcircuitproperties("Receiver")
-    tx=femm.mo_getcircuitproperties("New Circuit")
+    rx=femm.mo_getcircuitproperties(config.RX_CIRCUIT)
+    tx=femm.mo_getcircuitproperties(config.TX_CIRCUIT)
     M=(abs(rx[2])/abs(tx[0]))*1e6 if abs(tx[0])>0 else 0.0
     femm.mo_close()
     return M, abs(rx[2]), abs(rx[1])
@@ -34,7 +34,8 @@ with open(OUT,"w") as f:
         femm.openfemm()
         femm.opendocument(config.FEM_FILE)
         femm.mi_saveas(WORK)
-        femm.mi_probdef(20000,"millimeters","planar",1e-8,1,30,0)
+        femm.mi_probdef(config.FREQUENCY_HZ,"millimeters","planar",1e-8,
+                        config.COIL_DEPTH_MM,30,0)
         # baseline
         M0,flux0,v0=coil_flux(femm)
         log("=== AXLE COUNTER DETECTION DIP (FEMM) ===")
@@ -56,8 +57,9 @@ with open(OUT,"w") as f:
         dip=(M0-M1)/M0*100 if M0>0 else 0
         log(f"--> Detection dip: {dip:.1f}%  (M {M0:.5f} -> {M1:.5f} uH)")
         femm.mi_close(); femm.closefemm()
-        json.dump(dict(M_no_wheel_uH=M0,M_wheel_uH=M1,dip_pct=dip,
-            RXv_no_wheel=v0,RXv_wheel=v1), open(os.path.join(HERE,"reports","wheel_dip.json"),"w"),indent=2)
+        with open(os.path.join(HERE,"reports","wheel_dip.json"),"w") as jf:
+            json.dump(dict(M_no_wheel_uH=M0,M_wheel_uH=M1,dip_pct=dip,
+                RXv_no_wheel=v0,RXv_wheel=v1), jf, indent=2)
         log("DONE OK")
     except Exception as e:
         log("ERROR: "+str(e)); f.write(traceback.format_exc())

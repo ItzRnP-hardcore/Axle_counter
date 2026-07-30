@@ -6,7 +6,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
 
-import os
+import config
+
 PROJ = os.path.dirname(os.path.abspath(__file__))
 FIGDIR = os.path.join(PROJ, "reports", "figures")
 os.makedirs(FIGDIR, exist_ok=True)
@@ -36,45 +37,69 @@ def parse_geom(path):
     labels=[(float(r[0]),float(r[1]),int(r[2]),int(r[7])) for r in sec("[NumBlockLabels]")]
     return pts,segs,labels
 
-nx,ny,na,tris=parse_ans(os.path.join(PROJ,"temp.ans"))
-pts,segs,labels=parse_geom(os.path.join(PROJ,"temp.fem"))
-print(f"Parsed FEM: {len(nx)} nodes, {len(tris)} tris, {len(pts)} pts, {len(segs)} segs")
-triang=mtri.Triangulation(nx,ny,tris)
-gcol={0:"#555555",1:ACCENT2,2:ACCENT3}
+# Prefer the DOE scratch pair (temp.fem/.ans) if a run left one here;
+# otherwise fall back to the solved base model. The old version required
+# temp.* and crashed when it was absent (it was also saved to FEMM's CWD,
+# not this folder, by the old axle.py).
+_pairs = [(os.path.join(PROJ, "temp.fem"), os.path.join(PROJ, "temp.ans")),
+          (config.FEM_FILE, os.path.splitext(config.FEM_FILE)[0] + ".ans")]
+fem_pair = next(((f, a) for f, a in _pairs
+                 if os.path.exists(f) and os.path.exists(a)), None)
 
-# A: flux map
-fig,ax=plt.subplots(figsize=(8.2,7.4))
-tcf=ax.tricontourf(triang,na*1e6,levels=40,cmap="RdBu_r")
-ax.tricontour(triang,na*1e6,levels=26,colors="k",linewidths=0.45,alpha=0.55)
-cb=fig.colorbar(tcf,ax=ax,shrink=0.85); cb.set_label(r"Vector potential $A_z$ ($\mu$Wb/m)")
-for n0,n1,g in segs:
-    x0,y0=pts[n0];x1,y1=pts[n1]; ax.plot([x0,x1],[y0,y1],color=gcol.get(g,"k"),lw=2.0)
-ax.plot([],[],color=ACCENT2,lw=2,label="TX coil (grp 1)"); ax.plot([],[],color=ACCENT3,lw=2,label="RX coil (grp 2)")
-ax.plot([],[],color="#555555",lw=2,label="Steel rail / boundary")
-ax.set_xlim(-140,140); ax.set_ylim(-10,260); ax.set_aspect("equal")
-ax.set_xlabel("x (mm)"); ax.set_ylabel("y (mm)")
-ax.set_title("FEM Result - Magnetostatic Flux Map (2.5 A DC in TX)\nBlack contours = magnetic flux lines")
-ax.legend(loc="upper right",framealpha=0.9)
-fig.tight_layout(); fig.savefig(f"{FIGDIR}/01_fem_flux_map.png"); plt.close(fig)
+# NOTE on groups: in the saved model, group 1 is the LEFT coil = RX
+# ("Receiver") and group 2 is the RIGHT coil = TX ("New Circuit"). The old
+# legends had this backwards.
+gcol={0:"#555555",1:ACCENT3,2:ACCENT2}
 
-# B: geometry
-fig,ax=plt.subplots(figsize=(8.2,6.6))
-for n0,n1,g in segs:
-    x0,y0=pts[n0];x1,y1=pts[n1]; ax.plot([x0,x1],[y0,y1],color=gcol.get(g,"k"),lw=2.2)
-for (lx,ly,mat,turns) in labels:
-    ax.plot(lx,ly,"o",color="k",ms=4)
-    c={2:"Air",3:"1018 Steel (rail)",4:f"coil N={turns:+d}"}.get(mat,str(mat))
-    ax.annotate(c,(lx,ly),textcoords="offset points",xytext=(6,4),fontsize=8)
-ax.set_xlim(-210,210); ax.set_ylim(-15,415); ax.set_aspect("equal")
-ax.set_xlabel("x (mm)"); ax.set_ylabel("y (mm)")
-ax.set_title("Model Geometry - Rail cross-section, TX/RX coils, air domain")
-ax.plot([],[],color=ACCENT2,lw=2,label="TX coil"); ax.plot([],[],color=ACCENT3,lw=2,label="RX coil")
-ax.plot([],[],color="#555555",lw=2,label="Rail + air boundary"); ax.legend(loc="upper right")
-fig.tight_layout(); fig.savefig(f"{FIGDIR}/02_geometry.png"); plt.close(fig)
+if fem_pair:
+    fem_f, ans_f = fem_pair
+    nx,ny,na,tris=parse_ans(ans_f)
+    pts,segs,labels=parse_geom(fem_f)
+    print(f"Parsed FEM ({os.path.basename(fem_f)}): {len(nx)} nodes, "
+          f"{len(tris)} tris, {len(pts)} pts, {len(segs)} segs")
+    triang=mtri.Triangulation(nx,ny,tris)
 
-# analytical grid
-mu0=4*np.pi*1e-7; rho=1.68e-8; f0=20000.0; omega=2*np.pi*f0
-M0=0.00771e-6; Np0=100; Ns0=60; Ap0=0.01; As0=0.06; a=1.5e-3
+    # A: flux map
+    fig,ax=plt.subplots(figsize=(8.2,7.4))
+    tcf=ax.tricontourf(triang,na*1e6,levels=40,cmap="RdBu_r")
+    ax.tricontour(triang,na*1e6,levels=26,colors="k",linewidths=0.45,alpha=0.55)
+    cb=fig.colorbar(tcf,ax=ax,shrink=0.85); cb.set_label(r"Vector potential $A_z$ ($\mu$Wb/m)")
+    for n0,n1,g in segs:
+        x0,y0=pts[n0];x1,y1=pts[n1]; ax.plot([x0,x1],[y0,y1],color=gcol.get(g,"k"),lw=2.0)
+    ax.plot([],[],color=ACCENT2,lw=2,label="TX coil (grp 2, right)")
+    ax.plot([],[],color=ACCENT3,lw=2,label="RX coil (grp 1, left)")
+    ax.plot([],[],color="#555555",lw=2,label="Steel rail / boundary")
+    ax.set_xlim(-140,140); ax.set_ylim(-10,260); ax.set_aspect("equal")
+    ax.set_xlabel("x (mm)"); ax.set_ylabel("y (mm)")
+    ax.set_title(f"FEM Result - Flux Map ({config.TX_CURRENT_MAG:g} A in TX)\nBlack contours = magnetic flux lines")
+    ax.legend(loc="upper right",framealpha=0.9)
+    fig.tight_layout(); fig.savefig(f"{FIGDIR}/01_fem_flux_map.png"); plt.close(fig)
+
+    # B: geometry
+    fig,ax=plt.subplots(figsize=(8.2,6.6))
+    for n0,n1,g in segs:
+        x0,y0=pts[n0];x1,y1=pts[n1]; ax.plot([x0,x1],[y0,y1],color=gcol.get(g,"k"),lw=2.2)
+    for (lx,ly,mat,turns) in labels:
+        ax.plot(lx,ly,"o",color="k",ms=4)
+        c={2:"Air",3:"1018 Steel (rail)",4:f"coil N={turns:+d}"}.get(mat,str(mat))
+        ax.annotate(c,(lx,ly),textcoords="offset points",xytext=(6,4),fontsize=8)
+    ax.set_xlim(-210,210); ax.set_ylim(-15,415); ax.set_aspect("equal")
+    ax.set_xlabel("x (mm)"); ax.set_ylabel("y (mm)")
+    ax.set_title("Model Geometry - Rail cross-section, TX/RX coils, air domain")
+    ax.plot([],[],color=ACCENT2,lw=2,label="TX coil (right)")
+    ax.plot([],[],color=ACCENT3,lw=2,label="RX coil (left)")
+    ax.plot([],[],color="#555555",lw=2,label="Rail + air boundary"); ax.legend(loc="upper right")
+    fig.tight_layout(); fig.savefig(f"{FIGDIR}/02_geometry.png"); plt.close(fig)
+else:
+    print("No solved FEM pair found (temp.* or base .FEM/.ans) -- skipping "
+          "figures 01/02.")
+
+# analytical grid -- anchored to the VERIFIED FEMM baseline (config.M0_UH at
+# BASELINE_TURNS on both coils). The old grid used a stale DC anchor and a
+# wrong Ns0=60 baseline. M ~ N^2 is FEMM-verified; the area term is an
+# analytic extrapolation.
+mu0=4*np.pi*1e-7; rho=1.68e-8; f0=config.FREQUENCY_HZ; omega=2*np.pi*f0
+M0=config.M0_H; N0=config.BASELINE_TURNS; a=1.5e-3
 def acr(rdc,a,fr):
     d=np.sqrt(rho/(np.pi*fr*mu0)); x=a/d
     return rdc*(1+x**4/48 if x<1 else x/2+0.75+3/(32*x))
@@ -82,7 +107,7 @@ turns=[50,100,150,200,300,400]; scales=[1.0,5.0,10.0,15.0,20.0]
 M=np.zeros((len(turns),len(scales))); Vs=np.zeros_like(M)
 for i,N in enumerate(turns):
     for j,sc in enumerate(scales):
-        Ap=Ap0*sc; As=As0*sc; m=M0*(N/Np0)*(N/Ns0)*(Ap/Ap0)*(As/As0)
+        m=M0*(N/N0)**2*sc*sc
         M[i,j]=m*1e6; Vs[i,j]=2*omega*m*5.0
 
 fig,ax=plt.subplots(figsize=(7.6,5.6))
@@ -105,7 +130,11 @@ ax.set_xlabel("Coil turns (Np=Ns)"); ax.set_ylabel(r"$V_{s,pp}$ (V)")
 ax.set_title("Induced Secondary Voltage @ 20 kHz, 5 A drive"); ax.legend()
 fig.tight_layout(); fig.savefig(f"{FIGDIR}/04_secondary_voltage.png"); plt.close(fig)
 
-csv=pd.read_csv(os.path.join(PROJ,"reports","axle_counter_sweep_data.csv"))
+legacy_csv=os.path.join(PROJ,"reports","axle_counter_sweep_data.csv")
+if not os.path.exists(legacy_csv):
+    raise SystemExit("Figures 01-04 written. reports/axle_counter_sweep_data.csv "
+                     "is missing, skipping figures 05-09.")
+csv=pd.read_csv(legacy_csv)
 sub=csv[(csv.Frequency_Hz==20000)&(csv.Wire_Gauge_AWG==24)]
 fig,ax=plt.subplots(figsize=(7.8,5.4))
 for Np in sorted(sub.Primary_Turns_Np.unique()):
@@ -146,15 +175,27 @@ ax2.set_ylabel("Peak current (A)",color=ACCENT2); ax2.tick_params(axis="y",label
 ax.set_title(f"Effect of Wire Gauge (20 kHz, Np=160, flux loss {flt:g}%)")
 fig.tight_layout(); fig.savefig(f"{FIGDIR}/08_wire_gauge.png"); plt.close(fig)
 
-freqs=[10,20]; ip=[7.66,3.83]; vpr=[22.41,13.89]; cap=[3.84,0.96]
+# Fig 09: computed from the config anchor (the old version hardcoded numbers
+# derived from a mislabelled "FEMM" M of 3.43 uH -- see summary.py).
+Np_d=Ns_d=200; Ap_d=As_d=0.2; wr=1.5e-3
+rp_d=np.sqrt(Ap_d/np.pi)
+M_d=config.M0_H*(Np_d/N0)*(Ns_d/N0)*(Ap_d/config.A_REF_M2)*(As_d/config.A_REF_M2)
+Lp_d=mu0*Np_d**2*rp_d*(np.log(8*rp_d/wr)-2.0)
+Rdc_d=rho*(Np_d*2*np.pi*rp_d)/(np.pi*wr**2)
+freqs=[10,20]; ip=[]; vpr=[]; cap=[]
+for fk in freqs:
+    om=2*np.pi*fk*1e3
+    ipk=(3.3/2)/(om*M_d)
+    ip.append(ipk); vpr.append(2*ipk*acr(Rdc_d,wr,fk*1e3)); cap.append(1e9/(om**2*Lp_d))
 x=np.arange(len(freqs))
 fig,axs=plt.subplots(1,3,figsize=(11.5,4.0))
 for ax,data,ttl,col,unit in zip(axs,[ip,vpr,cap],
     ["Required peak current","Resonant drive voltage","Resonant capacitor"],
     [ACCENT,ACCENT3,ACCENT2],["A","Vpp","nF"]):
     ax.bar(x,data,0.6,color=col)
-    for xi,d in zip(x,data): ax.text(xi,d,f"{d:g} {unit}",ha="center",va="bottom",fontsize=9)
+    for xi,d in zip(x,data): ax.text(xi,d,f"{d:.3g} {unit}",ha="center",va="bottom",fontsize=9)
     ax.set_xticks(x); ax.set_xticklabels([f"{fq} kHz" for fq in freqs]); ax.set_title(ttl,fontsize=10); ax.margins(y=0.18)
-fig.suptitle("Resonant-Matched Operating Point (M=3.43 uH, 3.3 Vpp target)")
+fig.suptitle(f"Resonant-Matched Operating Point (analytic M={M_d*1e6:.1f} uH, "
+             "3.3 Vpp target; area scaling extrapolated)")
 fig.tight_layout(); fig.savefig(f"{FIGDIR}/09_operating_point.png"); plt.close(fig)
 print("Figures:",sorted(os.listdir(FIGDIR)))
