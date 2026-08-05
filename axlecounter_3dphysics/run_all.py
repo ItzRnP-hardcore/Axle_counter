@@ -14,7 +14,7 @@ writes:
                                               geometry that make_figs prefers
                                               for figures 01/02
   femm_sweep      -> coil_parameter_sweep_femm.csv
-                                            : the 100-turn row of this CSV is
+                                            : the BASELINE_TURNS row of this CSV is
                                               the anchor sanity_check compares
                                               config.M0_UH against
   femm_wheel_dip  -> _wheel_work.fem/.ans   : the solved wheel-present model
@@ -140,6 +140,12 @@ STAGES = [
     Stage("analysis_and_reporting/sanity_check.py",
           "physics sanity suite over every report; writes sanity_check_report.md"),
 
+    # -- 6. Report -----------------------------------------------------------
+    # Last, so it can quote the sanity result. Every number it prints is read
+    # from config and reports/ at build time, so it cannot go stale.
+    Stage("analysis_and_reporting/build_report.py",
+          "rebuilds the full report (Markdown + PDF) from live results"),
+
     # -- Optional: print-only helpers, no files written ----------------------
     Stage("analysis_and_reporting/summary.py",
           "prints the scaled operating-point summary", group="optional"),
@@ -173,6 +179,28 @@ def run_script(path):
                           cwd=ROOT, env=env).returncode
 
 
+# Driver executed in a SUBPROCESS to run one notebook in place.
+#
+# Each notebook gets its own interpreter deliberately. Running two notebooks
+# from a single process leaves the previous kernel's asyncio/zmq state behind
+# on Windows, and the second write then fails with a spurious
+# "OSError: [Errno 22] Invalid argument". A fresh process per notebook removes
+# that class of failure entirely, and matches how the .py stages are run.
+_NB_DRIVER = r"""
+import sys, os
+import nbformat
+from nbclient import NotebookClient
+full = sys.argv[1]
+nb = nbformat.read(full, as_version=4)
+# CWD = the notebook's own folder, matching how a user opens it in Jupyter.
+# The notebooks locate config.py by walking upward from there.
+client = NotebookClient(nb, timeout=1800, kernel_name="python3",
+                        resources={"metadata": {"path": os.path.dirname(full)}})
+client.execute()
+nbformat.write(nb, full)
+"""
+
+
 def run_notebook(path):
     """Execute a notebook in place, refreshing its stored outputs.
 
@@ -180,25 +208,17 @@ def run_notebook(path):
     (treated as a skip rather than a hard error).
     """
     try:
-        import nbformat
-        from nbclient import NotebookClient
+        import nbformat            # noqa: F401 -- availability probe only
+        import nbclient            # noqa: F401
     except ImportError:
         print("   nbclient/nbformat not installed -- skipping this notebook "
               "(pip install nbclient nbformat)")
         return 2
-    full = os.path.join(ROOT, path)
-    nb = nbformat.read(full, as_version=4)
-    # Execute with the notebook's own folder as CWD, matching how a user would
-    # open it in Jupyter. The notebooks locate config.py by walking upward.
-    client = NotebookClient(nb, timeout=1800, kernel_name="python3",
-                            resources={"metadata": {"path": os.path.dirname(full)}})
-    try:
-        client.execute()
-        nbformat.write(nb, full)
-        return 0
-    except Exception as exc:
-        print(f"   notebook failed: {type(exc).__name__}: {exc}")
-        return 1
+    full = os.path.normpath(os.path.join(ROOT, path))
+    env = dict(os.environ)
+    env["PYTHONPATH"] = ROOT + os.pathsep + env.get("PYTHONPATH", "")
+    return subprocess.run([sys.executable, "-c", _NB_DRIVER, full],
+                          cwd=ROOT, env=env).returncode
 
 
 def main():

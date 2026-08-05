@@ -38,6 +38,11 @@ OUT_FILE = os.path.join(config.BASE_DIR, "femm", "optimal_geom_scaled.fem")
 # Candidate coil size multipliers, tried largest-first; the first one whose
 # scaled geometry still meshes (no collision with the rail) wins. 1.0 is the
 # guaranteed fallback -- it means "no scaling", i.e. shift/tilt only.
+#
+# LOCAL on purpose: these are dimensionless LINEAR multipliers handed to FEMM's
+# mi_scale, feasibility-probing the model geometry. config.AREA_SCALE_SWEEP is
+# not the same thing (it scales coil AREA in the analytic extrapolations), and
+# config defines no geometry-scale grid, so there is no config name to use.
 SCALE_CANDIDATES = [1.5, 1.4, 1.3, 1.2, 1.1, 1.0]
 
 

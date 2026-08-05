@@ -24,15 +24,18 @@ import config
 print("Starting optimizer...")
 start_time = time.time()
 
-# Constraints on the drive electronics and the physical build
+# Constraints on the drive electronics and the physical build.
+# MAX_VP_PP is LOCAL on purpose: it describes the bench amplifier's output
+# swing, not the coil, and config.py defines no drive-voltage limit -- so there
+# is no config name to point at and the value stays here.
 MAX_VP_PP = 24.0 # 24V peak-to-peak means 12V peak
 MAX_VP_PEAK = MAX_VP_PP / 2.0
-MAX_IP_PEAK = 5.0 # Amps
-MAX_WIRE_LEN = 500.0 # meters per coil
+MAX_IP_PEAK = config.MAX_DRIVE_CURRENT_A   # A peak, from config
+MAX_WIRE_LEN = config.MAX_WIRE_LENGTH_M    # meters per coil, from config
 
-# Constants
-mu0 = 4 * np.pi * 1e-7      # permeability of free space (H/m)
-rho_copper = 1.68e-8        # copper resistivity (ohm.m)
+# Constants (defined once in config.py)
+mu0 = config.MU0                 # permeability of free space (H/m)
+rho_copper = config.RHO_COPPER   # copper resistivity (ohm.m)
 
 # Verified FEMM baseline (see config.py): M0 is the measured mutual inductance
 # with BASELINE_TURNS turns on both coils and nominal coil area A_REF_M2. Every
@@ -68,14 +71,22 @@ best_Vs_pp = 0.0
 best_params = {}
 
 # Grid Search -- every combination of the lists below is evaluated.
-frequencies = [10000, 20000]                 # candidate drive frequencies (Hz)
-wire_radii_mm = [0.25, 0.5, 1.0, 1.5, 2.0]   # conductor radius options (mm)
-Ap_list = np.linspace(0.01, 0.2, 20)         # primary (TX) coil areas, m^2
-As_list = np.linspace(0.01, 0.2, 20)         # secondary (RX) coil areas, m^2
+# Candidate drive frequencies (Hz): the two ends of the config frequency sweep,
+# i.e. its start and the canonical operating point.
+frequencies = [config.FREQ_SWEEP_START_HZ, config.FREQUENCY_HZ]
+# Conductor radius options (m), anchored on the canonical 18 AWG wire radius.
+# The multipliers are a LOCAL dimensionless search grid (half the canonical
+# wire up to 4x it); config defines ONE wire, not a sweep of wires, so only the
+# anchor comes from config.
+WIRE_RADIUS_SCALES = [0.5, 1.0, 2.0, 3.0, 4.0]
+wire_radii_m = [s * config.WIRE_RADIUS_M for s in WIRE_RADIUS_SCALES]
+# Coil areas (m^2): the reference coil area scaled by the config study grid, so
+# the areas explored here are the same ones the rest of the project extrapolates.
+Ap_list = np.array(config.AREA_SCALE_SWEEP) * config.A_REF_M2   # primary (TX)
+As_list = np.array(config.AREA_SCALE_SWEEP) * config.A_REF_M2   # secondary (RX)
 
 for f in frequencies:
-    for a_mm in wire_radii_mm:
-        a = a_mm * 1e-3
+    for a in wire_radii_m:
         for Ap in Ap_list:
             # Treat each coil as a circle of the given area to get its radius,
             # which sets both the wire length per turn and the resistance.
@@ -89,8 +100,9 @@ for f in frequencies:
                 # Determine max Ns that fits under 500m
                 max_Ns_len = int(MAX_WIRE_LEN / (2 * np.pi * rs))
                 
-                # Candidate primary turn counts (skip any that need too much wire)
-                for Np in [10, 50, 100, 200, 500, 1000, 2000, 3000, 5000]:
+                # Candidate primary turn counts, from the canonical turn grid
+                # (skip any that need too much wire)
+                for Np in config.TURNS_SWEEP:
                     if Np > max_Np_len: continue
 
                     lp = Np * 2 * np.pi * rp
@@ -103,9 +115,10 @@ for f in frequencies:
                     Ip_peak_limit_from_voltage = MAX_VP_PEAK / R_ac
                     Ip_peak = min(MAX_IP_PEAK, Ip_peak_limit_from_voltage)
 
-                    # Candidate secondary turn counts (the RX coil carries no
-                    # current, so it may run to more turns than the primary)
-                    for Ns in [10, 50, 100, 200, 500, 1000, 2000, 3000, 5000, 10000]:
+                    # Candidate secondary turn counts, from the same canonical
+                    # turn grid. The RX coil carries no current, so only the
+                    # wire-length cap limits how far up the grid it may go.
+                    for Ns in config.TURNS_SWEEP:
                         if Ns > max_Ns_len: continue
 
                         # Scale M away from the FEMM anchor: linear in each
@@ -124,7 +137,7 @@ for f in frequencies:
                             best_Vs_pp = Vs_pp
                             best_params = {
                                 'Frequency_kHz': f / 1e3,
-                                'Wire_Radius_mm': a_mm,
+                                'Wire_Radius_mm': a * 1e3,
                                 'Primary_Area_m2': Ap,
                                 'Secondary_Area_m2': As,
                                 'Primary_Turns': Np,

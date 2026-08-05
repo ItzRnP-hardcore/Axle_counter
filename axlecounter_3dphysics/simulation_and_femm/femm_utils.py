@@ -40,6 +40,8 @@ def set_frequency(freq_hz=None):
     # Depth = the real coil's axial length. A 2D planar solve reports flux per
     # unit depth, so this argument must be config.COIL_DEPTH_MM for absolute
     # flux / M / voltage to be physical rather than per-mm.
+    # The precision (1e-8), minimum mesh angle (30) and acsolver (0) are FEMM
+    # numerical settings, not physical parameters, so they stay local.
     femm.mi_probdef(freq_hz, "millimeters", "planar", 1e-8,
                     config.COIL_DEPTH_MM, 30, 0)
     return freq_hz

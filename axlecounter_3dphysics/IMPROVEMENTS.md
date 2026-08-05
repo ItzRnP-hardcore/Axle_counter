@@ -39,8 +39,11 @@ Read directly from the `[NumBlockLabels]` block of
 
 | Coil | Side | Label x (mm) | FEMM group | Circuit |
 |---|---|---|---|---|
-| **TX** (energised, 2.5 A) | **RIGHT** (+x) | +48.09, +70.29 | 2 | `"New Circuit"` |
-| **RX** (open / sense) | **LEFT** (−x) | −72.71, −50.59 | 1 | `"Receiver"` |
+| **TX** (energised, 2.5 A) | **RIGHT** (+x) | +47.02, +116.75 | 2 | `"New Circuit"` |
+| **RX** (open / sense) | **LEFT** (−x) | −47.44, −116.91 | 1 | `"Receiver"` |
+
+Each coil is drawn as **two** bundles (the go and return conductors), 70 mm
+apart, which is why two x-coordinates are listed per coil.
 
 `config.py`, `femm_sweep.py`, `make_figs.py` and `generate_wheel_figure.py` all
 agree with this table.
@@ -57,7 +60,7 @@ agree with this table.
    analysing. A DC solve reports zero induced RX voltage and understates
    coupling ~6×.
 4. **Depth must match.** The 2D planar model computes flux *per unit depth*, so
-   `config.COIL_DEPTH_MM` (25 mm) scales every absolute flux/M/voltage and must
+   `config.COIL_DEPTH_MM` scales every absolute flux/M/voltage and must
    equal the `[Depth]` header in the `.FEM`. `sanity_check.py` enforces this.
 5. **Paths come from `config`**, never from a script's own `__file__` — the
    scripts live in subfolders, so `dirname(__file__)` is one level too deep.
@@ -73,18 +76,18 @@ agree with this table.
 
 | Quantity | Value |
 |---|---|
-| Baseline M (100/100 turns, 20 kHz) | **0.926949 µH** (`config.M0_UH`) |
-| Magnetostatic M (f = 0) | 0.149669 µH |
-| RX open-circuit voltage at 2.5 A | 0.291210 V |
-| Detection dip with wheel present | **91.7 %** (M 0.92695 → 0.07666 µH) |
-| M drift across 10–20 kHz | 1.5 % |
-| DOE optimum (feasible) | dx = −4 mm, θ = −10° → **M = 1.3217 µH** |
-| Largest feasible coil scale at optimum | 1.0× (1.1–1.5× collide with the rail) |
-| Air-core recommendation | 1 kV cap class: 84 turns, AWG16, 25 kHz, 32.07 nF → 51.4 V tuned RX |
+| Baseline M (212/212 turns, 20 kHz) | **21.4651 µH** (`config.M0_UH`) |
+| Magnetostatic M (f = 0) | 5.2995 µH |
+| RX open-circuit voltage at 2.5 A | 6.7435 V |
+| Detection dip with wheel present | **87.99 %** (M 21.4651 → 2.5785 µH) |
+| M drift across the swept band | 0.2 % |
+| DOE optimum (feasible) | dx = -4 mm, θ = -15° → **M = 31.9653 µH** |
+| Largest feasible coil scale at optimum | 1.0× |
+| Air-core recommendation | 1000 V cap class: 91 turns, 18 AWG, 20 kHz, 40.39 nF → 248.5 V tuned RX |
 
 Solver validation: a known reference coil (212 turns, 30/40 mm × 25 mm window)
-solved axisymmetric in FEMM gives **L = 3.180 mH vs Wheeler's formula 3.267 mH
-(2.7 % apart)**. Sanity suite: **28 passed / 0 failed / 0 skipped**.
+solved axisymmetric in FEMM gives **L = 3.180 mH vs Wheeler's formula 3.241 mH
+(1.9 % apart)**. Sanity suite: **28 passed / 0 failed / 0 skipped**.
 
 ---
 
@@ -104,7 +107,7 @@ held pre-depth-fix values that contradicted the live anchor.
 ## New: `run_all.py`
 
 There was no orchestrator; each batch file ran a single script. `run_all.py`
-now runs all 13 pipeline stages in dependency order (live solves → analytics →
+now runs all 14 pipeline stages in dependency order (live solves → analytics →
 notebooks → figures → sanity gate), sequentially because FEMM is
 single-instance, with timing, a pass/fail summary and a non-zero exit code on
 failure.
@@ -176,3 +179,64 @@ source pair + labelled title) and `RUN_SUMMARY.md`. Sanity suite: **28 passed /
 writer). They date from 2026-07-15 and do not refresh, so any claim that "all
 13 figures" are fresh is true of only 10 of them. Either restore the script
 that made them or treat those three as historical images.
+
+## Canonical-coil rebuild (2026-08-05, session 5)
+
+The project now describes **one** coil. Every physical parameter is defined
+once in `config.py` and derived from five stated assumptions (ri = 30 mm,
+ro = 40 mm, l = 25 mm, packing = 0.70, 18 AWG), from which the turn count
+follows as N = 212 rather than being asserted.
+
+### What changed in the model
+
+| | Before | After |
+|---|---|---|
+| Turns per coil | 100 (unjustified) | **212** (derived from the winding window) |
+| Coil bundle cross-section | 13.27 x 35.39 mm = 469.65 mm2 | **10 x 25 mm = 250 mm2** |
+| Coil mean radius | 11.06 mm (matched nothing) | **35 mm** (= config.COIL_RADIUS_M) |
+| Coil separation | 120.84 mm | **164.06 mm** |
+| Material LamFill | 1 (100% solid copper) | **0.6984** (the true fill) |
+| Wire, everywhere | 18 AWG / 16 AWG / 1.5 mm mixed | **18 AWG only** |
+| Frequency, everywhere | 20 kHz / 25 kHz mixed | **20 kHz only** |
+| M0 (measured) | 0.9269 uH | **21.4651 uH** |
+
+The coils were translated outward because a true 35 mm-radius coil would
+otherwise sit inside the rail head (which reaches x = 34.35 mm at coil height);
+the original 6.60 mm inner clearance is preserved exactly. Backups of the
+previous model are in `old_files/pre_212turn_backup/`.
+
+### Results on the rebuilt model
+
+- Detection dip **87.99 %** (M 21.4651 -> 2.5785 uH,
+  RX 6.7435 -> 0.8101 V)
+- M follows N^2 to within **0.5 %** across 50-400 turns (was 1.8 %) -- the
+  consistent geometry and the corrected fill factor both improved it
+- Sanity suite **28 passed / 0 failed / 0 skipped**
+
+### Other corrections
+
+1. **Wheeler's constant** was 31.6e-6; the exact imperial-to-SI conversion is
+   0.8/0.0254 = 31.4961e-6. Corrected, so the code and the hand derivation now
+   agree digit for digit (L = 3.241 mH vs FEMM 3.180 mH, 1.9 % apart).
+2. **The "free-space upper bound" check was describing itself wrongly.** With
+   the larger coils FEMM sits 1.42x ABOVE the point-dipole estimate, because
+   that estimate treats each coil as a point 164 mm away while the facing
+   conductor bundles are only ~94 mm apart. The check is now stated as a
+   factor-of-3 band with the reasoning attached, instead of claiming a bound it
+   never had.
+3. **Notebooks now run in separate subprocesses.** Executing two in one process
+   left the previous kernel's asyncio/zmq state behind on Windows and the second
+   write failed with a spurious `OSError: [Errno 22]`.
+4. **`RUN_SUMMARY.md` is now generated**, not hand-maintained -- it had drifted
+   out of date every time the model changed.
+
+### New deliverables
+
+- `run_all.py` gained a final stage, `build_report.py`, which regenerates
+  `reports/Axle_Counter_Full_Report.md` + `.pdf` and `reports/RUN_SUMMARY.md`
+  entirely from live config/report data. Byline: **Prepared by Rudranarayan**.
+- `analysis_and_reporting/md_to_pdf.py` renders Markdown (with LaTeX display
+  math via matplotlib mathtext, since no LaTeX engine is installed) to PDF.
+- `sanity_check.md` / `sanity_check.pdf` in the parent folder: a step-by-step
+  hand derivation, theory stated before each calculation, checked against FEMM.
+  `test.md` is superseded by it and now says so.

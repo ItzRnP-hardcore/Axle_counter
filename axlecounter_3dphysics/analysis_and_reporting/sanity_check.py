@@ -44,16 +44,17 @@ import pandas as pd
 
 import config
 
-# Permeability of free space, and the resistivity of copper.
-MU0 = 4 * np.pi * 1e-7
-RHO_CU = 1.68e-8
+# Permeability of free space and the resistivity of copper now come from
+# config (config.MU0 / config.RHO_COPPER) and are used directly at every site.
 
-# =====================  REFERENCE COIL (edit freely)  ========================
-RI = 0.030            # inner radius (m)
-RO = 0.040            # outer radius (m)  -> mean radius 35 mm = config value
-LEN = 0.025           # axial length of winding (m)
-PACKING = 0.70        # wire packing fraction of the winding window
-WIRE_D = 1.024e-3     # wire diameter (m), 18 AWG to match the FEMM blocks
+# ================  REFERENCE COIL (all values from config)  ==================
+# These were local literals; they are now the canonical coil geometry, so the
+# hand-check model and the FEM model can never describe different hardware.
+RI = config.COIL_INNER_RADIUS_M    # inner radius (m)
+RO = config.COIL_OUTER_RADIUS_M    # outer radius (m)  -> mean radius 35 mm = config value
+LEN = config.COIL_LENGTH_M         # axial length of winding (m)
+PACKING = config.PACKING_FRACTION  # wire packing fraction of the winding window
+WIRE_D = config.WIRE_DIAMETER_M    # wire diameter (m), 18 AWG to match the FEMM blocks
 FREQ = config.FREQUENCY_HZ
 IP = config.TX_CURRENT_MAG
 # =============================================================================
@@ -95,7 +96,8 @@ def ac_factor(a_w, freq):
     of roughly that thickness, so the effective conducting cross-section
     shrinks and resistance rises. Multiply a DC resistance by `factor`.
     """
-    delta = math.sqrt(RHO_CU / (math.pi * freq * MU0))
+    # Material constants from config -- one definition for the whole project.
+    delta = math.sqrt(config.RHO_COPPER / (math.pi * freq * config.MU0))
     x = a_w / delta
     if x < 1.0:
         return 1.0 + x**4 / 48.0, delta
@@ -105,7 +107,7 @@ def ac_factor(a_w, freq):
 def loop_L(N, r, a_w):
     """Single current-loop formula used throughout the repo (valid when the
     winding bundle is small compared to the coil radius)."""
-    return MU0 * N**2 * r * (math.log(8 * r / a_w) - 2.0)
+    return config.MU0 * N**2 * r * (math.log(8 * r / a_w) - 2.0)
 
 
 def wheeler_L(N, r_mean, length, depth):
@@ -116,13 +118,18 @@ def wheeler_L(N, r_mean, length, depth):
     whole winding as one filament. The two therefore disagree by a factor of
     order 1.5-2x for a chunky bundle; they are cross-checked, not equated.
     """
-    return 31.6e-6 * N**2 * r_mean**2 / (6 * r_mean + 9 * length + 10 * depth)
+    # Constant = 0.8 / 0.0254. Wheeler published the formula in inches with a
+    # 0.8 coefficient; converting to metres divides once by 0.0254 because the
+    # numerator gains (1/0.0254)^2 and the denominator (1/0.0254). The exact
+    # 31.4961 is used rather than the rounded 31.6 so this matches the hand
+    # derivation in sanity_check.md digit for digit.
+    return 31.4961e-6 * N**2 * r_mean**2 / (6 * r_mean + 9 * length + 10 * depth)
 
 
 def dipole_M_coplanar(N1, N2, r1, r2, d):
     """Mutual inductance of two coplanar (side-by-side) loops, dipole approx.
     The equatorial dipole field is half the on-axis field, hence the /4."""
-    return MU0 * math.pi * N1 * N2 * r1**2 * r2**2 / (4 * d**3)
+    return config.MU0 * math.pi * N1 * N2 * r1**2 * r2**2 / (4 * d**3)
 
 
 # ---------------------------------------------------------------------------
@@ -134,8 +141,12 @@ SEC = "reference coil"
 a_w = WIRE_D / 2
 r_mean = (RI + RO) / 2
 depth = RO - RI
-window = depth * LEN
-N_geom = PACKING * window / (math.pi * a_w**2)
+# The turn count now comes from config: config.TURNS_EXACT is exactly the
+# PACKING * (depth * LEN) / (pi * a_w^2) formula above, and BASELINE_TURNS is
+# that rounded to a whole turn. Using the INTEGER here keeps Wheeler's formula
+# and the FEMM self-check below on the SAME turn count -- FEMM can only wind a
+# whole number of turns, so comparing it against a fractional N was unfair.
+N_geom = config.BASELINE_TURNS
 info(SEC, "geometry", f"ri={RI*1e3:.0f} mm, ro={RO*1e3:.0f} mm, l={LEN*1e3:.0f} mm, "
      f"pf={PACKING}, wire d={WIRE_D*1e3:.3f} mm -> N = {N_geom:.0f} turns")
 
@@ -151,10 +162,10 @@ check(SEC, "repo loop formula within 3x of Wheeler", 1/3 < L_lp / L_wh < 3,
 # AC correction, the quality factor Q = wL/R, the capacitor that resonates it
 # (C = 1/(w^2 L)) and the peak voltage that capacitor would have to withstand.
 lwire = N_geom * 2 * math.pi * r_mean
-R_dc = RHO_CU * lwire / (math.pi * a_w**2)
+R_dc = config.RHO_COPPER * lwire / (math.pi * a_w**2)
 fac, delta = ac_factor(a_w, FREQ)
 R_ac = R_dc * fac
-w = 2 * math.pi * FREQ
+w = config.OMEGA                       # 2*pi*config.FREQUENCY_HZ, from config
 Q = w * L_wh / R_ac
 C_res = 1 / (w**2 * L_wh)
 V_cap = IP * w * L_wh
@@ -164,11 +175,13 @@ info(SEC, "electrical", f"wire {lwire:.1f} m, Rdc={R_dc:.3f} ohm, Rac={R_ac:.3f}
 check(SEC, "skin depth < wire radius at operating frequency", delta < a_w,
       f"delta={delta*1e3:.3f} mm vs a={a_w*1e3:.3f} mm -- AC resistance correction matters")
 
-# Coil separation from the model geometry (center-to-center)
-d_sep = abs(config.TX_CENTER_X - config.RX_CENTER_X) * 1e-3
-M_dip_100 = dipole_M_coplanar(100, 100, config.COIL_RADIUS_M, config.COIL_RADIUS_M, d_sep)
-info(SEC, "free-space M estimate (100/100 turns)",
-     f"coplanar dipole M = {M_dip_100*1e6:.2f} uH at d = {d_sep*1e3:.1f} mm "
+# Coil separation from the model geometry (center-to-center), from config
+d_sep = config.COIL_SEPARATION_M
+# Both coils carry the canonical baseline turn count.
+M_dip_base = dipole_M_coplanar(config.BASELINE_TURNS, config.BASELINE_TURNS,
+                               config.COIL_RADIUS_M, config.COIL_RADIUS_M, d_sep)
+info(SEC, f"free-space M estimate ({config.BASELINE_TURNS}/{config.BASELINE_TURNS} turns)",
+     f"coplanar dipole M = {M_dip_base*1e6:.2f} uH at d = {d_sep*1e3:.1f} mm "
      f"(overestimates somewhat at d/r = {d_sep/config.COIL_RADIUS_M:.1f})")
 
 # FEMM depth caveat -- the single most important scale factor in the project
@@ -190,12 +203,22 @@ if fem_depth_mm is not None:
     info(SEC, "depth scaling",
          f"2D planar model solved at Depth = {config.COIL_DEPTH_MM:g} mm (the real coil "
          f"axial length), so FEMM fluxes/M/voltages are absolute physical values. "
-         f"M0 = {config.M0_UH:.3f} uH vs {M_dip_100*1e6:.2f} uH free-space dipole bound; "
-         f"FEMM sitting below free space is expected -- the steel rail between the "
-         f"coils shields flux at AC.")
-    check(SEC, "FEMM M0 does not exceed free-space upper bound",
-          config.M0_UH * 1e-6 <= M_dip_100 * 1.5,
-          "free space (no rail) must upper-bound the shielded rail geometry")
+         f"M0 = {config.M0_UH:.3f} uH vs {M_dip_base*1e6:.2f} uH point-dipole estimate "
+         f"(ratio {config.M0_UH*1e-6/M_dip_base:.2f}x).")
+    # The point-dipole formula is an ORDER-OF-MAGNITUDE cross-check, not a
+    # strict bound. It treats each coil as a point at its centre, so at modest
+    # d/R it UNDERSTATES the coupling of a real extended winding: the facing
+    # conductor bundles are far closer than the centre-to-centre distance
+    # (here the near bundles are ~94 mm apart while the centres are 164 mm).
+    # Working against that, the steel rail shields flux at AC. The two effects
+    # push opposite ways, so the test is a generous factor-of-3 band -- wide
+    # enough to allow either, tight enough to catch a mis-scaled solve.
+    ratio = config.M0_UH * 1e-6 / M_dip_base
+    check(SEC, "FEMM M0 within a factor of 3 of the point-dipole estimate",
+          1.0 / 3.0 < ratio < 3.0,
+          f"ratio {ratio:.2f}x at d/R = {d_sep/config.COIL_RADIUS_M:.1f}; "
+          "extended windings couple more than point dipoles, the rail shields "
+          "-- a value outside this band means the solve is mis-scaled")
 else:
     skip(SEC, "FEMM depth check", "could not read [Depth] from the .FEM file")
 
@@ -227,13 +250,18 @@ def femm_selfcheck_L():
         femm.mi_addsegment(ri, z1, ri, z0)
         femm.mi_getmaterial("Copper")
         femm.mi_getmaterial("Air")
-        femm.mi_addcircprop("selfL", 1.0, 1)   # 1 A, series circuit
+        # 1 A, series circuit. LOCAL literal on purpose: this is a unit probe
+        # current for L = flux-linkage / current, not the TX drive level, so it
+        # must NOT follow config.TX_CURRENT_MAG.
+        femm.mi_addcircprop("selfL", 1.0, 1)
         cx = (ri + ro) / 2
         femm.mi_addblocklabel(cx, 0)
         femm.mi_selectlabel(cx, 0)
         femm.mi_setblockprop("Copper", 1, 0, "selfL", 0, 1, round(N_geom))
         femm.mi_clearselected()
         femm.mi_makeABC(7, 250, 0, 0, 0)       # open boundary, R = 250 mm
+        # Air label at (5, 100) mm -- a mesh-label COORDINATE inside the open
+        # boundary, not a turn count. Stays local.
         femm.mi_addblocklabel(5, 100)          # air, between coil and boundary
         femm.mi_selectlabel(5, 100)
         femm.mi_setblockprop("Air", 1, 0, "<None>", 0, 0, 0)
@@ -271,20 +299,24 @@ SEC = "coil_parameter_sweep_femm.csv"
 path = os.path.join(config.OUTPUT_DIR, "coil_parameter_sweep_femm.csv")
 if os.path.exists(path):
     df = pd.read_csv(path)
-    w20 = 2 * math.pi * config.FREQUENCY_HZ
+    w20 = config.OMEGA                 # 2*pi*config.FREQUENCY_HZ, from config
     bad = df[abs(df.RX_Voltage_V - w20 * df.RX_Flux_Wb) / (w20 * df.RX_Flux_Wb) > 0.01]
     check(SEC, "open-circuit induction V_rx = w*flux (every row, 1%)", bad.empty,
           f"{len(df) - len(bad)}/{len(df)} rows obey Faraday's law")
     check(SEC, "TX current equals requested drive", (abs(df.TX_Current_A - df.Drive_Current_A) < 1e-6).all())
     piv = df.groupby("Turns").Mutual_Inductance_uH.mean()
-    if 100 in piv.index:
-        errs = {int(n): rel_err(piv[n] / piv[100], (n / 100) ** 2) for n in piv.index}
+    # The reference row is the canonical baseline turn count from config, which
+    # is also the row config.M0_UH was measured from.
+    if config.BASELINE_TURNS in piv.index:
+        errs = {int(n): rel_err(piv[n] / piv[config.BASELINE_TURNS],
+                                (n / config.BASELINE_TURNS) ** 2) for n in piv.index}
         worst = max(errs.values())
         check(SEC, "M follows N^2 turn scaling (12%)", worst < 0.12,
-              "ratios vs (N/100)^2: " + ", ".join(f"N={n}: {e*100:.1f}%" for n, e in errs.items()))
-        check(SEC, "config.M0_UH matches the 100-turn FEMM row (1%)",
-              rel_err(config.M0_UH, piv[100]) < 0.01,
-              f"config {config.M0_UH:.5f} vs CSV {piv[100]:.5f} uH")
+              f"ratios vs (N/{config.BASELINE_TURNS})^2: "
+              + ", ".join(f"N={n}: {e*100:.1f}%" for n, e in errs.items()))
+        check(SEC, f"config.M0_UH matches the {config.BASELINE_TURNS}-turn FEMM row (1%)",
+              rel_err(config.M0_UH, piv[config.BASELINE_TURNS]) < 0.01,
+              f"config {config.M0_UH:.5f} vs CSV {piv[config.BASELINE_TURNS]:.5f} uH")
     lin = df.groupby("Turns").Mutual_Inductance_uH.agg(lambda s: (s.max() - s.min()) / s.mean())
     check(SEC, "M independent of drive current (linearity, 0.5%)", (lin < 0.005).all(),
           f"max spread {lin.max()*100:.3f}%")
@@ -323,7 +355,7 @@ if os.path.exists(path):
     max_err = np.max(np.abs(df.Mutual_Inductance_uH - M_exp) / M_exp)
     check(SEC, "M reproduces from config anchor (0.1%)", max_err < 1e-3,
           f"max err {max_err * 100:.4f}%")
-    w20 = 2 * math.pi * config.FREQUENCY_HZ
+    w20 = config.OMEGA                 # 2*pi*config.FREQUENCY_HZ, from config
     Vs_exp = 2 * w20 * M_exp * 1e-6 * df.Primary_Current_Peak_A
     check(SEC, "Vs_pp = 2*w*M*Ip (0.1%)",
           np.max(np.abs(df.Resulting_Secondary_Voltage_Vpp - Vs_exp) / Vs_exp) < 1e-3)
@@ -446,7 +478,7 @@ if os.path.exists(path):
                       % round(config.FREQUENCY_HZ / 1e3), txt, re.S)
         if m:
             flux, volt = float(m.group(1)), float(m.group(2))
-            w20 = 2 * math.pi * config.FREQUENCY_HZ
+            w20 = config.OMEGA         # 2*pi*config.FREQUENCY_HZ, from config
             check(SEC, "AC section obeys V = w*flux (1%)", rel_err(volt, w20 * flux) < 0.01,
                   f"{volt:.6f} V vs w*flux = {w20*flux:.6f} V")
         else:

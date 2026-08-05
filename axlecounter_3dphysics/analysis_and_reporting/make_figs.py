@@ -122,7 +122,9 @@ for _f, _a, _desc in _candidates:
 # Segment group -> colour. In the saved model, group 1 is the LEFT coil = RX
 # ("Receiver") and group 2 is the RIGHT coil = TX ("New Circuit"); group 0 is
 # the rail and outer boundary. The legends below must follow this mapping.
-gcol={0:"#555555",1:ACCENT3,2:ACCENT2}
+# Group numbers come from config (RX_GROUP / TX_GROUP); group 0 has no config
+# name because it is FEMM's default "ungrouped" bucket, not a coil.
+gcol={0:"#555555",config.RX_GROUP:ACCENT3,config.TX_GROUP:ACCENT2}
 
 if fem_pair:
     fem_f, ans_f = fem_pair
@@ -141,8 +143,8 @@ if fem_pair:
     cb=fig.colorbar(tcf,ax=ax,shrink=0.85); cb.set_label(r"Vector potential $A_z$ ($\mu$Wb/m)")
     for n0,n1,g in segs:
         x0,y0=pts[n0];x1,y1=pts[n1]; ax.plot([x0,x1],[y0,y1],color=gcol.get(g,"k"),lw=2.0)
-    ax.plot([],[],color=ACCENT2,lw=2,label="TX coil (grp 2, right)")
-    ax.plot([],[],color=ACCENT3,lw=2,label="RX coil (grp 1, left)")
+    ax.plot([],[],color=ACCENT2,lw=2,label=f"TX coil (grp {config.TX_GROUP}, right)")
+    ax.plot([],[],color=ACCENT3,lw=2,label=f"RX coil (grp {config.RX_GROUP}, left)")
     ax.plot([],[],color="#555555",lw=2,label="Steel rail / boundary")
     ax.set_xlim(-140,140); ax.set_ylim(-10,260); ax.set_aspect("equal")
     ax.set_xlabel("x (mm)"); ax.set_ylabel("y (mm)")
@@ -178,8 +180,9 @@ else:
 # (config.M0_UH measured at BASELINE_TURNS on both coils). M ~ N^2 is
 # FEMM-verified; the linear-in-area term is an analytic EXTRAPOLATION, so the
 # large area scale factors below are order-of-magnitude guidance only.
-mu0=4*np.pi*1e-7; rho=1.68e-8; f0=config.FREQUENCY_HZ; omega=2*np.pi*f0
-M0=config.M0_H; N0=config.BASELINE_TURNS; a=1.5e-3
+# Constants, operating point and the 18 AWG wire radius all come from config.
+mu0=config.MU0; rho=config.RHO_COPPER; f0=config.FREQUENCY_HZ; omega=config.OMEGA
+M0=config.M0_H; N0=config.BASELINE_TURNS; a=config.WIRE_RADIUS_M
 def acr(rdc,a,fr):
     """Scale a DC wire resistance up for the skin effect at frequency fr.
 
@@ -189,15 +192,16 @@ def acr(rdc,a,fr):
     """
     d=np.sqrt(rho/(np.pi*fr*mu0)); x=a/d
     return rdc*(1+x**4/48 if x<1 else x/2+0.75+3/(32*x))
-turns=[50,100,150,200,300,400]; scales=[1.0,5.0,10.0,15.0,20.0]
+# Same sweep grids as the analytic CSV and the FEMM sweep -- from config.
+turns=config.TURNS_SWEEP; scales=config.AREA_SCALE_SWEEP
 M=np.zeros((len(turns),len(scales))); Vs=np.zeros_like(M)
 for i,N in enumerate(turns):
     for j,sc in enumerate(scales):
         # Scale the anchor by N^2 and by the area factor on each coil.
         m=M0*(N/N0)**2*sc*sc
-        # Faraday: peak induced voltage = omega * M * I, here at 5 A drive;
-        # the factor 2 converts peak to peak-to-peak.
-        M[i,j]=m*1e6; Vs[i,j]=2*omega*m*5.0
+        # Faraday: peak induced voltage = omega * M * I, here at the configured
+        # drive-current ceiling; the factor 2 converts peak to peak-to-peak.
+        M[i,j]=m*1e6; Vs[i,j]=2*omega*m*config.MAX_DRIVE_CURRENT_A
 
 # Figure 03 -- M over the turns x area grid, printed in each heatmap cell.
 fig,ax=plt.subplots(figsize=(7.6,5.6))
@@ -214,12 +218,14 @@ ax.set_title("Analytical Mutual Inductance vs Turns & Area"); ax.grid(False)
 fig.tight_layout(); fig.savefig(f"{FIGDIR}/03_mutual_inductance.png"); plt.close(fig)
 
 # Figure 04 -- the same grid as induced secondary voltage, one curve per area
-# scale, against the 3.3 V signal target.
+# scale, against the configured signal target (config.DESIGN_TARGET_VPP).
 fig,ax=plt.subplots(figsize=(7.8,5.4))
 for j,sc in enumerate(scales): ax.plot(turns,Vs[:,j],"o-",label=f"area {sc:g}x")
-ax.axhline(3.3,color=ACCENT2,ls="--",lw=1.5,label="3.3 V target")
+ax.axhline(config.DESIGN_TARGET_VPP,color=ACCENT2,ls="--",lw=1.5,
+           label=f"{config.DESIGN_TARGET_VPP:g} V target")
 ax.set_xlabel("Coil turns (Np=Ns)"); ax.set_ylabel(r"$V_{s,pp}$ (V)")
-ax.set_title("Induced Secondary Voltage @ 20 kHz, 5 A drive"); ax.legend()
+ax.set_title(f"Induced Secondary Voltage @ {f0/1e3:.0f} kHz, "
+             f"{config.MAX_DRIVE_CURRENT_A:g} A drive"); ax.legend()
 fig.tight_layout(); fig.savefig(f"{FIGDIR}/04_secondary_voltage.png"); plt.close(fig)
 
 # Figures 05-08 replot the legacy notebook parameter sweep. "Flux loss" is
@@ -230,15 +236,20 @@ if not os.path.exists(legacy_csv):
     raise SystemExit("Figures 01-04 written. reports/axle_counter_sweep_data.csv "
                      "is missing, skipping figures 05-09.")
 csv=pd.read_csv(legacy_csv)
+# NOTE ON THE SLICE VALUES BELOW: the frequency comes from config, but the
+# AWG 24 and Np=160 filters are kept as local literals ON PURPOSE. This legacy
+# CSV was generated on its own grid (AWG 20/24/28/34, Np 100/160/200); it does
+# not contain the canonical 18 AWG or config.DESIGN_TURNS rows, so substituting
+# config values here would select an empty slice and the figures would fail.
 # Fig 05 -- hold frequency and wire gauge fixed, one curve per primary turn
 # count: how much peak current the primary needs as flux loss worsens.
-sub=csv[(csv.Frequency_Hz==20000)&(csv.Wire_Gauge_AWG==24)]
+sub=csv[(csv.Frequency_Hz==config.FREQUENCY_HZ)&(csv.Wire_Gauge_AWG==24)]
 fig,ax=plt.subplots(figsize=(7.8,5.4))
 for Np in sorted(sub.Primary_Turns_Np.unique()):
     s=sub[sub.Primary_Turns_Np==Np].sort_values("Flux_Loss_Pct")
     ax.plot(s.Flux_Loss_Pct,s.Peak_Current_A,"o-",ms=3,label=f"Np={Np}")
 ax.set_yscale("log"); ax.set_xlabel("Flux loss (%)"); ax.set_ylabel("Peak current (A, log)")
-ax.set_title("Required Primary Peak Current vs Flux Loss (20 kHz, AWG 24)")
+ax.set_title(f"Required Primary Peak Current vs Flux Loss ({f0/1e3:.0f} kHz, AWG 24)")
 ax.legend(title="Primary turns",ncol=2,fontsize=8)
 fig.tight_layout(); fig.savefig(f"{FIGDIR}/05_current_vs_fluxloss.png"); plt.close(fig)
 
@@ -248,25 +259,27 @@ for Np in sorted(sub.Primary_Turns_Np.unique()):
     s=sub[sub.Primary_Turns_Np==Np].sort_values("Flux_Loss_Pct")
     ax.plot(s.Flux_Loss_Pct,s.Resonant_Voltage_Peak_V,"o-",ms=3,label=f"Np={Np}")
 ax.set_yscale("log"); ax.set_xlabel("Flux loss (%)"); ax.set_ylabel("Resonant drive V (peak, log)")
-ax.set_title("Resonant Primary Drive Voltage vs Flux Loss (20 kHz, AWG 24)")
+ax.set_title(f"Resonant Primary Drive Voltage vs Flux Loss ({f0/1e3:.0f} kHz, AWG 24)")
 ax.legend(title="Primary turns",ncol=2,fontsize=8)
 fig.tight_layout(); fig.savefig(f"{FIGDIR}/06_resonant_voltage.png"); plt.close(fig)
 
 # Fig 07 -- the series resonant capacitor sees a large voltage (I/(w*C)).
-# The shaded band is the region that stays under the 250 V part rating.
-sub2=csv[(csv.Frequency_Hz==20000)&(csv.Primary_Turns_Np==160)&(csv.Wire_Gauge_AWG==24)].sort_values("Flux_Loss_Pct")
+# The shaded band is the region that stays under the lowest standard film-cap
+# class (config.CAP_VOLTAGE_CLASSES[0] = 250 V), the procurement limit here.
+cap_limit_v=config.CAP_VOLTAGE_CLASSES[0]
+sub2=csv[(csv.Frequency_Hz==config.FREQUENCY_HZ)&(csv.Primary_Turns_Np==160)&(csv.Wire_Gauge_AWG==24)].sort_values("Flux_Loss_Pct")
 fig,ax=plt.subplots(figsize=(7.8,5.4))
 ax.plot(sub2.Flux_Loss_Pct,sub2.Capacitor_Voltage_Peak_V,"o-",color=ACCENT,ms=4)
-ax.axhline(250,color=ACCENT2,ls="--",lw=1.6,label="250 V procurement limit")
-ax.fill_between(sub2.Flux_Loss_Pct,0,250,color=ACCENT3,alpha=0.12)
+ax.axhline(cap_limit_v,color=ACCENT2,ls="--",lw=1.6,label=f"{cap_limit_v:g} V procurement limit")
+ax.fill_between(sub2.Flux_Loss_Pct,0,cap_limit_v,color=ACCENT3,alpha=0.12)
 ax.set_yscale("log"); ax.set_xlabel("Flux loss (%)"); ax.set_ylabel("Cap peak voltage (V, log)")
-ax.set_title("Capacitor Voltage Feasibility vs Flux Loss (20 kHz, Np=160)"); ax.legend()
+ax.set_title(f"Capacitor Voltage Feasibility vs Flux Loss ({f0/1e3:.0f} kHz, Np=160)"); ax.legend()
 fig.tight_layout(); fig.savefig(f"{FIGDIR}/07_capacitor_feasibility.png"); plt.close(fig)
 
 # Fig 08 -- wire gauge trade-off at the sampled flux-loss value nearest 99%.
 # Higher AWG means thinner wire, hence more resistance and more drive voltage.
 flt=min(csv.Flux_Loss_Pct.unique(),key=lambda v:abs(v-99.0))
-subg=csv[(csv.Frequency_Hz==20000)&(csv.Primary_Turns_Np==160)&(csv.Flux_Loss_Pct==flt)].sort_values("Wire_Gauge_AWG")
+subg=csv[(csv.Frequency_Hz==config.FREQUENCY_HZ)&(csv.Primary_Turns_Np==160)&(csv.Flux_Loss_Pct==flt)].sort_values("Wire_Gauge_AWG")
 fig,ax=plt.subplots(figsize=(7.8,5.4))
 ax.plot(subg.Wire_Gauge_AWG,subg.Resonant_Voltage_Peak_V,"o-",color=ACCENT,label="Resonant V")
 ax.set_xlabel("Wire gauge (AWG - higher=thinner)"); ax.set_ylabel("Resonant drive V (peak)",color=ACCENT)
@@ -274,24 +287,27 @@ ax.tick_params(axis="y",labelcolor=ACCENT)
 ax2=ax.twinx(); ax2.grid(False)
 ax2.plot(subg.Wire_Gauge_AWG,subg.Peak_Current_A,"s--",color=ACCENT2,label="Peak current")
 ax2.set_ylabel("Peak current (A)",color=ACCENT2); ax2.tick_params(axis="y",labelcolor=ACCENT2)
-ax.set_title(f"Effect of Wire Gauge (20 kHz, Np=160, flux loss {flt:g}%)")
+ax.set_title(f"Effect of Wire Gauge ({f0/1e3:.0f} kHz, Np=160, flux loss {flt:g}%)")
 fig.tight_layout(); fig.savefig(f"{FIGDIR}/08_wire_gauge.png"); plt.close(fig)
 
-# Fig 09 -- one scaled design point (200 turns, 0.2 m^2 per coil), computed
-# from the config FEMM anchor. Mirrors summary.py: the required primary
-# current, the resonant drive voltage, and the resonant capacitor value at
-# 10 and 20 kHz. The area scaling here is extrapolated, not FEMM-verified.
-Np_d=Ns_d=200; Ap_d=As_d=0.2; wr=1.5e-3
+# Fig 09 -- one scaled design point (config.DESIGN_TURNS turns,
+# config.DESIGN_AREA_M2 per coil), computed from the config FEMM anchor.
+# Mirrors summary.py: the required primary current, the resonant drive
+# voltage, and the resonant capacitor value at the low end of the swept band
+# and at the operating point. Area scaling is extrapolated, not FEMM-verified.
+Np_d=Ns_d=config.DESIGN_TURNS; Ap_d=As_d=config.DESIGN_AREA_M2
+wr=config.WIRE_RADIUS_M
 rp_d=np.sqrt(Ap_d/np.pi)
 M_d=config.M0_H*(Np_d/N0)*(Ns_d/N0)*(Ap_d/config.A_REF_M2)*(As_d/config.A_REF_M2)
 # Self-inductance of the primary, thin-wire single-loop formula.
 Lp_d=mu0*Np_d**2*rp_d*(np.log(8*rp_d/wr)-2.0)
 Rdc_d=rho*(Np_d*2*np.pi*rp_d)/(np.pi*wr**2)
-freqs=[10,20]; ip=[]; vpr=[]; cap=[]
+# Both frequencies in kHz, from config (sweep start and operating point).
+freqs=[config.FREQ_SWEEP_START_HZ/1e3,f0/1e3]; ip=[]; vpr=[]; cap=[]
 for fk in freqs:
     om=2*np.pi*fk*1e3
-    # Faraday inverted: current needed for a 3.3 Vpp (= 1.65 V peak) signal.
-    ipk=(3.3/2)/(om*M_d)
+    # Faraday inverted: current needed for the configured target Vpp signal.
+    ipk=(config.DESIGN_TARGET_VPP/2)/(om*M_d)
     # At resonance only R_ac is left to drive (x2 for peak-to-peak), and the
     # series capacitor that cancels omega*L is C = 1/(omega^2 * L), in nF.
     ip.append(ipk); vpr.append(2*ipk*acr(Rdc_d,wr,fk*1e3)); cap.append(1e9/(om**2*Lp_d))
@@ -302,8 +318,8 @@ for ax,data,ttl,col,unit in zip(axs,[ip,vpr,cap],
     [ACCENT,ACCENT3,ACCENT2],["A","Vpp","nF"]):
     ax.bar(x,data,0.6,color=col)
     for xi,d in zip(x,data): ax.text(xi,d,f"{d:.3g} {unit}",ha="center",va="bottom",fontsize=9)
-    ax.set_xticks(x); ax.set_xticklabels([f"{fq} kHz" for fq in freqs]); ax.set_title(ttl,fontsize=10); ax.margins(y=0.18)
+    ax.set_xticks(x); ax.set_xticklabels([f"{fq:g} kHz" for fq in freqs]); ax.set_title(ttl,fontsize=10); ax.margins(y=0.18)
 fig.suptitle(f"Resonant-Matched Operating Point (analytic M={M_d*1e6:.1f} uH, "
-             "3.3 Vpp target; area scaling extrapolated)")
+             f"{config.DESIGN_TARGET_VPP:g} Vpp target; area scaling extrapolated)")
 fig.tight_layout(); fig.savefig(f"{FIGDIR}/09_operating_point.png"); plt.close(fig)
 print("Figures:",sorted(os.listdir(FIGDIR)))

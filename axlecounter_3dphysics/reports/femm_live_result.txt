@@ -3,14 +3,14 @@ FEM file: C:\Users\rudra\Axle_counter\axlecounter_3dphysics\femm\InternMadebyPra
 
 [MAGNETOSTATIC (f=0)]
   TX current        : 2.5000 A
-  RX flux linkage   : 3.7417e-07 Wb
+  RX flux linkage   : 1.3249e-05 Wb
   RX induced voltage: 0.000000 V
-  Mutual inductance : 0.149669 uH
+  Mutual inductance : 5.299530 uH
 
 [TIME-HARMONIC (f=20kHz)]
   TX current        : 2.5000 A
-  RX flux linkage   : 2.3174e-06 Wb
-  RX induced voltage: 0.291210 V
-  Mutual inductance : 0.926949 uH
+  RX flux linkage   : 5.3663e-05 Wb
+  RX induced voltage: 6.743475 V
+  Mutual inductance : 21.465146 uH
 
 DONE OK

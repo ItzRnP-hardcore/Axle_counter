@@ -1,4 +1,4 @@
-"""Frequency sweep of the FEMM coil model from 10 kHz to 20 kHz.
+"""Frequency sweep of the FEMM coil model over config.FREQUENCY_SWEEP_HZ.
 
 For each frequency the shipped .FEM model is re-solved time-harmonically and
 the TX/RX circuit results are recorded:
@@ -25,16 +25,18 @@ import config
 CSV_OUT = os.path.join(config.OUTPUT_DIR, "frequency_sweep_femm.csv")
 WORK_FEM = os.path.join(config.BASE_DIR, "_freq_sweep_work.fem")
 
-# 10.0, 10.5, ... 20.0 kHz -- 21 points in 500 Hz steps.
-frequencies = [10000 + i * 500 for i in range(21)]
+# 10.0, 10.5, ... 20.0 kHz -- 21 points in 500 Hz steps, defined once in
+# config so the sweep grid cannot drift from the rest of the project.
+frequencies = config.FREQUENCY_SWEEP_HZ
 
 def run_freq_sweep():
-    print(f"Starting frequency sweep from 10kHz to 20kHz... (Total {len(frequencies)} points)")
+    print(f"Starting frequency sweep from {frequencies[0]/1e3:g}kHz to "
+          f"{frequencies[-1]/1e3:g}kHz... (Total {len(frequencies)} points)")
     femm.openfemm()
     results = []
     try:
         for freq in frequencies:
-            print(f"Testing Frequency={freq} Hz ...")
+            print(f"Testing Frequency={freq:g} Hz ...")
             femm.opendocument(config.FEM_FILE)
             femm.mi_saveas(WORK_FEM)
             

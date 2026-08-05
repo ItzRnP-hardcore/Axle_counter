@@ -40,7 +40,10 @@ This folder contains Python scripts, Jupyter notebooks, and FEMM (Finite Element
 - **`analysis_and_reporting/`**:
   - `physics_calculation.ipynb` & `sweep_analysis.ipynb`: Interactive Jupyter notebooks analyzing the simulation data and validating Faraday's Law and resonance identities.
   - `sanity_check.py`: An automated physics audit script that ensures all results obey the $N^2$ scaling laws and expected voltage formulas.
-- **`reports/`**: Contains the final generated PDF reports (`Axle_Counter_Run_Report.pdf`), CSV datasets, JSON optimums, and generated plots (`figures/`) illustrating mutual inductance, resonant voltage, and flux maps.
+  - `build_report.py`: Rebuilds the full project report (`Axle_Counter_Full_Report.md` + `.pdf`) and `RUN_SUMMARY.md` entirely from live `config.py` and `reports/` data, so the report can never contradict the results.
+  - `md_to_pdf.py`: Renders Markdown (including LaTeX display equations) to PDF.
+- **`reports/`**: Every generated artefact — the report (`Axle_Counter_Full_Report.pdf`), `RUN_SUMMARY.md`, `sanity_check_report.md`, CSV datasets, JSON optimums, and plots in `figures/` illustrating mutual inductance, resonant voltage and flux maps.
+- **`old_files/`**: Deprecated scripts, pre-refactor model backups, and superseded reports that no longer describe the current model.
 
 ---
 

@@ -2,7 +2,8 @@
 
 For each (turns, area scale) combination the script scales the mutual
 inductance away from the FEMM baseline, then works out what it takes to drive
-the primary at a fixed 5 A peak and what secondary voltage that induces.
+the primary at the configured current ceiling (config.MAX_DRIVE_CURRENT_A) and
+what secondary voltage that induces.
 
 Anchored to the VERIFIED FEMM baseline: config.M0_UH is the mutual inductance
 measured with BASELINE_TURNS turns on BOTH coils, solved time-harmonic at
@@ -27,10 +28,11 @@ import pandas as pd
 import config
 
 # Physical constants: permeability of free space, resistivity of copper.
-mu0 = 4 * np.pi * 1e-7
-rho_copper = 1.68e-8
+# Both come from config so every script in the project uses one definition.
+mu0 = config.MU0
+rho_copper = config.RHO_COPPER
 f = config.FREQUENCY_HZ
-omega = 2 * np.pi * f
+omega = config.OMEGA
 
 # Verified FEMM anchor (see config.py)
 M0 = config.M0_H            # H, at N0 turns on both coils, area scale 1.0
@@ -39,11 +41,11 @@ A0 = config.A_REF_M2        # nominal per-coil area at scale 1.0
 
 data = []
 
-# Sweep Parameters
-turns_list = [50, 100, 150, 200, 300, 400]
-area_scale_list = [1.0, 5.0, 10.0, 15.0, 20.0]
-wire_radius_mm = 1.5
-a = wire_radius_mm * 1e-3
+# Sweep Parameters -- the canonical grids and the canonical 18 AWG conductor,
+# all taken from config so this sweep covers the same points as femm_sweep.py.
+turns_list = config.TURNS_SWEEP
+area_scale_list = config.AREA_SCALE_SWEEP
+a = config.WIRE_RADIUS_M
 
 
 def get_ac_resistance(r_dc, a, freq):
@@ -72,8 +74,8 @@ for turns in turns_list:
         # M ~ N^2 (FEMM-verified) x area scale on each coil (extrapolated)
         M = M0 * (turns / N0) ** 2 * scale * scale
 
-        # We limit primary current to 5A
-        Ip_peak = 5.0
+        # We limit primary current to the configured ceiling (A peak)
+        Ip_peak = config.MAX_DRIVE_CURRENT_A
 
         # Drive voltage at resonance. A series capacitor cancels the coil's
         # inductive reactance, so only the AC wire resistance is left to push

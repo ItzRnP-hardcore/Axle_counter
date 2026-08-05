@@ -46,6 +46,12 @@ def test():
 
         # Non-winding regions: the steel rail and the surrounding air. Both
         # take no circuit, group 0 and no turns.
+        # LOCAL LITERALS: the rail and air block-label coordinates, and their
+        # material names, describe the BACKGROUND of the saved .FEM file, not
+        # the coil design. config defines a material/group for the wheel block
+        # (WHEEL_MATERIAL / WHEEL_GROUP) but nothing for the rail or the air
+        # region, so these are read back from the model as-is rather than
+        # invented here.
         femm.mi_selectlabel(0, 120)
         femm.mi_setblockprop("1018 Steel", 1, 0, "<None>", 0, 0, 0)
         femm.mi_clearselected()
@@ -68,6 +74,10 @@ def test():
         try:
             femm.mi_clearselected()
             femm.mi_selectgroup(config.RX_GROUP)
+            # LOCAL LITERAL: 8 mm is an arbitrary nudge to prove the move +
+            # re-mesh path works. It is NOT a DOE point -- config.distance_shifts
+            # is the real geometry grid, and axle.py owns that study -- so it is
+            # deliberately not wired to config.
             femm.mi_movetranslate(8, 0)   # shift 8 mm in +x, 0 mm in y
             print("Moved successfully!")
             femm.mi_saveas("_test_moved.fem")

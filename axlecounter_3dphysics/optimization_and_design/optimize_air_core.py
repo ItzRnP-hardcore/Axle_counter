@@ -28,20 +28,25 @@ import os
 import numpy as np, json
 import config
 
-mu0 = 4e-7*np.pi         # permeability of free space (H/m)
-rho = 1.68e-8            # resistivity of copper (ohm.m) at room temperature
-r_eff   = config.COIL_RADIUS_M   # effective coil radius (m) ~ FEM model coil size
-Ip_peak = 5.0            # max primary drive current (A peak)
-Lwire_max = 500.0        # max wire length per coil (m)
-f_op    = 25e3           # operating frequency (Hz)
-Q_REAL  = 100.0          # realistic loaded Q of a solid-wire air coil @25 kHz
-                         # (proximity + dielectric losses; use litz for higher)
-GAUGE   = ("AWG16", 0.646e-3)   # thick wire for 5 A + low resistance
+# Every physical quantity below is imported from config.py -- this script
+# asserts none of its own.
+mu0 = config.MU0                      # permeability of free space (H/m)
+rho = config.RHO_COPPER               # resistivity of copper (ohm.m) at room temperature
+r_eff   = config.COIL_RADIUS_M        # effective coil radius (m) ~ FEM model coil size
+Ip_peak = config.MAX_DRIVE_CURRENT_A  # max primary drive current (A peak)
+Lwire_max = config.MAX_WIRE_LENGTH_M  # max wire length per coil (m)
+f_op    = config.FREQUENCY_HZ         # canonical operating frequency (Hz)
+Q_REAL  = config.Q_LOADED             # realistic loaded Q of a solid-wire air coil
+                         # at f_op (proximity + dielectric losses; use litz for higher)
+# The canonical conductor: the same 18 AWG wire the FEM model and the derived
+# turn count are built on, so this table describes a coil that can be wound.
+GAUGE   = (config.COIL_WIRE_BLOCK, config.WIRE_RADIUS_M)
 
-w = 2*np.pi*f_op         # angular frequency (rad/s)
+w = config.OMEGA         # angular frequency (rad/s) at f_op
 a = GAUGE[1]             # wire conductor radius (m)
-M_ref = config.M0_H      # H, verified FEMM anchor at Np=Ns=100 (measured at
-                         # 20 kHz; M is treated as geometry-dominated here)
+M_ref = config.M0_H      # H, verified FEMM anchor at Np=Ns=config.BASELINE_TURNS
+                         # (measured time-harmonic at config.FREQUENCY_HZ; M is
+                         # treated as geometry-dominated here)
 
 def mutual_H(N):
     """Mutual inductance at N turns per coil, scaled from the FEMM anchor.
@@ -75,13 +80,15 @@ def ac_R(N,f):
     return Rdc*fac, lwire, delta
 
 # ---- Design table across available capacitor voltage ratings ---------------
-cap_ratings = [250, 630, 1000, 2000]   # V peak (standard film-cap classes)
+cap_ratings = config.CAP_VOLTAGE_CLASSES   # V peak (standard film-cap classes)
 rows=[]
 for Vcap_max in cap_ratings:
     # Largest N whose cap voltage stays within rating (V_cap = Ip*w*L). L grows
     # as N^2, so V_cap rises monotonically with N: step N up until the rating
     # is exceeded and keep the last turn count that passed. The loop also stops
     # once the wire length would exceed Lwire_max.
+    # N=20 is a LOCAL search starting point (a turn count far below any feasible
+    # optimum), not a physical parameter, so it has no config equivalent.
     N=20; bestN=None
     while N < int(Lwire_max/(2*np.pi*r_eff)):
         L=self_L(N); Vcap=Ip_peak*w*L
@@ -115,12 +122,14 @@ for r in rows:
           f"{r['Vrx_oc_mV']:>7.1f}mV {r['Vrx_tuned_V']:>9.2f}V {r['Cp_nF']:>7.2f} {r['Vdrive']:>6.2f}V")
 print("="*96)
 
-# ---- Recommended design: the 1000 V class (good signal, standard cap) -------
+# ---- Recommended design: the config.RECOMMENDED_CAP_VOLTAGE class -----------
 # 1000 V film caps are readily available while still allowing a high turn
-# count, so this row is the recommended operating point.
-rec_list=[r for r in rows if r["Vcap"]==1000]
+# count, so this row is the recommended operating point. The class itself is
+# named once in config, not here.
+V_REC = config.RECOMMENDED_CAP_VOLTAGE
+rec_list=[r for r in rows if r["Vcap"]==V_REC]
 if not rec_list:
-    raise SystemExit("No feasible 1000 V design row -- inspect the table above.")
+    raise SystemExit(f"No feasible {V_REC} V design row -- inspect the table above.")
 rec=rec_list[0]
 # Skin depth depends only on f_op, so compute it directly here rather than
 # relying on the value the loop above happened to leave behind.
@@ -132,7 +141,7 @@ rec.update(dict(f_kHz=f_op/1e3, gauge=GAUGE[0], wire_radius_mm=a*1e3,
     Cs_nF=rec["Cp_nF"]))
 with open(os.path.join(config.OUTPUT_DIR, "optimal_design.json"), "w") as f:
     json.dump({"table":rows,"recommended":rec}, f, indent=2)
-print("\nRECOMMENDED (1000 V cap class):")
+print(f"\nRECOMMENDED ({V_REC} V cap class):")
 for k in ["N","L_mH","M_uH","R","lwire","Vrx_oc_mV","Vrx_tuned_V","Cp_nF","Vdrive","Ploss"]:
     print(f"  {k:12}: {rec[k]:.4f}" if isinstance(rec[k],float) else f"  {k:12}: {rec[k]}")
 print("Saved reports/optimal_design.json")

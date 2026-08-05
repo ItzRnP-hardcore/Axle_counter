@@ -38,7 +38,10 @@ def solve_at(femm, freq, fem_file):
     # mi_probdef(frequency, units, type, precision, depth, minangle, acsolver).
     # The first argument is the frequency and it selects the solver mode:
     # 0 = magnetostatic, > 0 = time-harmonic. Depth must be the real coil
-    # axial length so absolute flux/M/voltage are physical, not per-mm.
+    # axial length so absolute flux/M/voltage are physical, not per-mm, and
+    # comes from config. The precision (1e-8), minimum mesh angle (30) and
+    # acsolver (0) are FEMM numerical settings, not physical parameters, so
+    # they stay local.
     femm.mi_probdef(freq, "millimeters", "planar", 1e-8,
                     config.COIL_DEPTH_MM, 30, 0)
     # Redirect the document to a scratch file BEFORE analyzing: FEMM auto-saves
@@ -75,6 +78,9 @@ with open(OUT, "w") as f:
         ac_label = f"TIME-HARMONIC (f={config.FREQUENCY_HZ/1e3:.0f}kHz)"
         # Same geometry, two operating points -- the DC case is the reference,
         # the AC case is the one that matches real axle-counter operation.
+        # The f = 0 below is the solver's magnetostatic mode selector, not a
+        # physical operating point, so it stays local; the AC point is
+        # config.FREQUENCY_HZ.
         for label, freq in [("MAGNETOSTATIC (f=0)", 0),
                             (ac_label, config.FREQUENCY_HZ)]:
             M, v, flux, i = solve_at(femm, freq, fem_file)

@@ -1,11 +1,12 @@
 """Operating-point summary for a scaled-up coil pair.
 
-Takes one hypothetical design point (200 turns and 0.2 m^2 on each coil),
-derives its mutual inductance from the VERIFIED FEMM anchor in config.py, and
-prints what it would take to hit a 3.3 Vpp signal at the receiver: primary
-current, uncompensated drive voltage, resonant capacitor value, and the much
-smaller drive voltage needed once that capacitor is fitted. Console output
-only -- nothing is written to disk.
+Takes one hypothetical design point (config.DESIGN_TURNS turns and
+config.DESIGN_AREA_M2 on each coil), derives its mutual inductance from the
+VERIFIED FEMM anchor in config.py, and prints what it would take to hit the
+config.DESIGN_TARGET_VPP signal at the receiver: primary current,
+uncompensated drive voltage, resonant capacitor value, and the much smaller
+drive voltage needed once that capacitor is fitted. Console output only --
+nothing is written to disk.
 
 The turn-scaling law M ~ N^2 is FEMM-verified. CAVEAT: the area term of the
 scaling law is an analytic EXTRAPOLATION, not a FEMM result (see config.py);
@@ -22,21 +23,23 @@ import numpy as np
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
-mu0 = 4 * np.pi * 1e-7
-rho_copper = 1.68e-8
+# Material constants come from config -- one definition for the whole project.
+mu0 = config.MU0
+rho_copper = config.RHO_COPPER
 
 # Target signal at the receiver, and the coil design point being evaluated.
 # Subscript p = primary (TX), s = secondary (RX). Each coil is treated as a
-# circle of area A, so r = sqrt(A/pi).
-V_s_pp = 3.3
+# circle of area A, so r = sqrt(A/pi). The design point (turns, area, target
+# voltage) and the 18 AWG wire radius all come from config.
+V_s_pp = config.DESIGN_TARGET_VPP
 V_s_peak = V_s_pp / 2.0
-N_s = 200
-A_s = 0.2
+N_s = config.DESIGN_TURNS
+A_s = config.DESIGN_AREA_M2
 r_s = np.sqrt(A_s / np.pi)
-N_p = 200
-A_p = 0.2
+N_p = config.DESIGN_TURNS
+A_p = config.DESIGN_AREA_M2
 r_p = np.sqrt(A_p / np.pi)
-wire_radius = 1.5e-3
+wire_radius = config.WIRE_RADIUS_M
 
 # Analytic M, anchored to the verified FEMM baseline: scale the measured M0
 # by turns on each coil (verified) and by area on each coil (extrapolated).
@@ -57,7 +60,7 @@ k = M_scaled / np.sqrt(L_p * L_s)
 
 print(f"FEMM anchor M0: {config.M0_UH:.4f} uH at {N0}/{N0} turns "
       f"({config.FREQUENCY_HZ/1e3:.0f} kHz)")
-print(f"Scaled design point: Np=Ns={N_p}, Ap=As={A_p} m^2 "
+print(f"Scaled design point: Np=Ns={N_p}, Ap=As={A_p:.4f} m^2 "
       f"(area scale ~{A_p/A0:.1f}x per coil -- extrapolated)")
 print(f"Analytic Mutual Inductance: {M_scaled*1e6:.2f} uH")
 print(f"Coupling Coefficient k: {k:.2e}" +
@@ -86,8 +89,9 @@ l_wire_p = N_p * 2 * np.pi * r_p
 A_wire = np.pi * (wire_radius**2)
 R_p_dc = rho_copper * l_wire_p / A_wire
 
-# Compare the two candidate operating frequencies.
-for f in [10000, 20000]:
+# Compare the two candidate operating frequencies: the bottom of the swept
+# band and the canonical operating point, both from config.
+for f in [config.FREQ_SWEEP_START_HZ, config.FREQUENCY_HZ]:
     omega = 2 * np.pi * f
     R_p_ac, delta = get_ac_resistance(R_p_dc, wire_radius, f)
 
@@ -109,7 +113,7 @@ for f in [10000, 20000]:
     V_p_peak_res = I_p_peak * R_p_ac
     V_p_pp_res = 2 * V_p_peak_res
 
-    print(f"\nFor 3.3Vpp at {f/1e3:.1f} kHz Sine Wave:")
+    print(f"\nFor {V_s_pp}Vpp at {f/1e3:.1f} kHz Sine Wave:")
     print(f"Required Primary Current: {I_p_peak:.3f} A peak (RMS: {I_p_rms:.3f} A)")
     print(f"Required Primary Voltage (Uncompensated): {V_p_pp:.2f} Vpp")
     print(f"Resonant Capacitor C_p: {C_p*1e9:.2f} nF")

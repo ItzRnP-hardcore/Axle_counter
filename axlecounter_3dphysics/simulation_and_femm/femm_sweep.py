@@ -30,9 +30,14 @@ import config
 CSV_OUT = os.path.join(config.OUTPUT_DIR, "coil_parameter_sweep_femm.csv")
 WORK_FEM = os.path.join(config.BASE_DIR, "_sweep_work.fem")
 
-# DOE dimensions -- both are pure properties, no geometry involved
-turns_sweep   = [50, 100, 150, 200]
-current_sweep = [2.5, 5.0]      # Amperes in the energised ("New Circuit") coil
+# DOE dimensions -- both are pure properties, no geometry involved.
+# Both grids come from config so this sweep, the analytic sweeps and
+# sanity_check.py describe the same experiment. config.TURNS_SWEEP contains
+# config.BASELINE_TURNS, which is the row sanity_check.py validates M0_UH
+# against; config.CURRENT_SWEEP is in Amperes in the energised
+# ("New Circuit") coil.
+turns_sweep   = config.TURNS_SWEEP
+current_sweep = config.CURRENT_SWEEP
 
 # Flattened list of the four coil block labels, as
 # (x, y, circuit_name, femm_group, sign). A FEMM "group" is an integer tag
@@ -68,6 +73,9 @@ def run_sweep():
                 #            minangle, acsolver). Frequency > 0 selects the
                 # time-harmonic solver; depth must be the real coil axial
                 # length so absolute flux/M/voltage are physical, not per-mm.
+                # Frequency and depth come from config. The precision (1e-8),
+                # minimum mesh angle (30) and acsolver (0) are FEMM numerical
+                # settings, not physical parameters, so they stay local.
                 femm.mi_probdef(config.FREQUENCY_HZ, "millimeters", "planar",
                                 1e-8, config.COIL_DEPTH_MM, 30, 0)
                 # Re-stamp the turns count onto each coil half.

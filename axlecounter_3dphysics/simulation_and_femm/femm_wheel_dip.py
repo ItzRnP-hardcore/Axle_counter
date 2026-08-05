@@ -60,7 +60,9 @@ with open(OUT,"w") as f:
         # mi_probdef(frequency, units, type, precision, depth, minangle,
         # acsolver). Frequency > 0 selects the time-harmonic solver; depth
         # must be the real coil axial length so absolute flux/M/voltage are
-        # physical rather than per-mm.
+        # physical rather than per-mm. Frequency and depth come from config;
+        # the precision (1e-8), minimum mesh angle (30) and acsolver (0) are
+        # FEMM numerical settings, not physical parameters, so they stay local.
         femm.mi_probdef(config.FREQUENCY_HZ,"millimeters","planar",1e-8,
                         config.COIL_DEPTH_MM,30,0)
         # Reference solve: geometry as saved, nothing between the coils.
@@ -81,9 +83,13 @@ with open(OUT,"w") as f:
         femm.mi_addblocklabel(cx,cy)
         femm.mi_selectlabel(cx,cy)
         # mi_setblockprop(material, automesh, meshsize, circuit, magdir,
-        # group, turns): solid 1018 steel, auto mesh, no circuit (it is not a
-        # winding), tagged as group 3 so the wheel is separable from the coils.
-        femm.mi_setblockprop("1018 Steel",1,0,"<None>",0,3,0)
+        # group, turns): solid steel, auto mesh, no circuit (it is not a
+        # winding), tagged with its own group so the wheel is separable from
+        # the coils. Material and group come from config
+        # (WHEEL_MATERIAL = "1018 Steel", WHEEL_GROUP = 3) so this solve and
+        # generate_wheel_figure.py describe the same block.
+        femm.mi_setblockprop(config.WHEEL_MATERIAL,1,0,"<None>",0,
+                             config.WHEEL_GROUP,0)
         femm.mi_clearselected()
         # Re-solve with the wheel in the flux path.
         M1,flux1,v1=coil_flux(femm)
