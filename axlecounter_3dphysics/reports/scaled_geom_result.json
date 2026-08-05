@@ -1,0 +1,11 @@
+{
+  "shift": {
+    "x": -4.0,
+    "y": 0.0,
+    "theta": -10.0
+  },
+  "scale_factor": 1.0,
+  "M_unscaled_uH": 1.3217385549109466,
+  "M_scaled_uH": 1.3217385549109466,
+  "output_fem": "C:\\Users\\rudra\\Axle_counter\\axlecounter_3dphysics\\femm\\optimal_geom_scaled.fem"
+}
